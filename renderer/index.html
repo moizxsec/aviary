@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>Aviary</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <svg class="defs" aria-hidden="true">
+    <filter id="paperGrain">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="4" seed="7" result="n"/>
+      <feColorMatrix in="n" type="saturate" values="0"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.5"/></feComponentTransfer>
+    </filter>
+  </svg>
+
+  <canvas id="stage"></canvas>
+  <div id="dom-layer"></div>
+
+  <script src="js/util.js"></script>
+  <script src="js/particles.js"></script>
+  <script src="js/flight.js"></script>
+  <script src="js/phoenix.js"></script>
+  <script src="js/letter.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

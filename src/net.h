@@ -42,6 +42,7 @@ int  net_listen(void);
 
 /* the local daemon's socket, shared by every client path */
 void av_socket_path(char *out, size_t n);
+int  av_daemon_is_up(void);
 int  av_local_send(const char *text, const char *from, const char *bird,
                    int depart, double fx, double fy);
 

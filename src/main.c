@@ -16,6 +16,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +25,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
@@ -390,8 +392,17 @@ static int daemon_main(int pixel_size) {
   int lfd = server_listen();
   if (lfd < 0) { overlay_close(&o); return 1; }
 
-  signal(SIGINT, on_signal);
-  signal(SIGTERM, on_signal);
+  /* glibc's signal() installs handlers with SA_RESTART, so select() would be
+   * restarted after a SIGTERM instead of returning EINTR — the loop never got
+   * back to its condition and the daemon ignored every polite request to stop.
+   * sigaction without SA_RESTART is what actually interrupts it. */
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = on_signal;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0;
+  sigaction(SIGINT, &sa, NULL);
+  sigaction(SIGTERM, &sa, NULL);
   signal(SIGPIPE, SIG_IGN);
 
   /* If this machine is linked to another one, run the relay listener as a
@@ -402,6 +413,10 @@ static int daemon_main(int pixel_size) {
   if (av_config_load(&netcfg)) {
     listener = fork();
     if (listener == 0) {
+      /* if the overlay ever dies without cleaning up, the kernel takes this
+       * one down too — no more orphans left polling the relay forever */
+      prctl(PR_SET_PDEATHSIG, SIGKILL);
+      if (getppid() == 1) _exit(0);
       _exit(net_listen());
     }
     if (listener > 0)
@@ -553,7 +568,14 @@ static int daemon_main(int pixel_size) {
     }
   }
 
-  if (listener > 0) { kill(listener, SIGTERM); waitpid(listener, NULL, 0); }
+  if (listener > 0) {
+    kill(listener, SIGTERM);
+    for (int i = 0; i < 20; i++) {          /* one second, then insist */
+      if (waitpid(listener, NULL, WNOHANG) == listener) { listener = -1; break; }
+      usleep(50000);
+    }
+    if (listener > 0) { kill(listener, SIGKILL); waitpid(listener, NULL, 0); }
+  }
   fprintf(stderr, "\n[aviary] bye\n");
   if (scene.p.a) scene_free(&scene);
   overlay_hide(&o);
@@ -569,6 +591,34 @@ static int daemon_main(int pixel_size) {
 
 /* Write a message and watch it leave. The bird lifts off from the line under
  * the one you typed on, so it reads as though it is taking that text with it. */
+/* Start the overlay in the background if it is not already there. Making the
+ * human run `aviary daemon` in another terminal is a trap: run it without an
+ * ampersand and the shell simply sits there, which reads as the program having
+ * hung. */
+static int ensure_daemon(void) {
+  if (av_daemon_is_up()) return 1;
+
+  char self[PATH_MAX];
+  ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+  if (n <= 0) return 0;
+  self[n] = 0;
+
+  pid_t p = fork();
+  if (p < 0) return 0;
+  if (p == 0) {
+    setsid();
+    int null = open("/dev/null", O_RDWR);
+    if (null >= 0) { dup2(null, 0); dup2(null, 1); dup2(null, 2); if (null > 2) close(null); }
+    execl(self, "aviary", "daemon", (char *)NULL);
+    _exit(127);
+  }
+  for (int i = 0; i < 40; i++) {         /* up to two seconds */
+    usleep(50000);
+    if (av_daemon_is_up()) return 1;
+  }
+  return 0;
+}
+
 static int compose_main(int argc, char **argv) {
   AvConfig cfg;
   int linked = av_config_load(&cfg);
@@ -582,6 +632,8 @@ static int compose_main(int argc, char **argv) {
     fprintf(stderr, "aviary compose: unknown option %s\n", argv[i]);
     return 1;
   }
+
+  ensure_daemon();
 
   int rows = 0, cols = 0;
   int have_cells = term_cells(&rows, &cols);
@@ -646,7 +698,9 @@ static void usage(void) {
     "now and then\n"
     "  aviary --bird owl         send with a different bird this once\n"
     "  aviary send \"text\"        fly one on your own screen, nothing sent\n"
-    "  aviary daemon [--pixel N] run the overlay by hand (systemd does this)\n"
+    "  aviary restart            bounce the overlay (it starts itself anyway)\n"
+    "  aviary stop               stop the overlay\n"
+    "  aviary daemon [--pixel N] run it in the foreground; blocks this terminal\n"
     "\n"
     "less often\n"
     "  aviary link <topic> <passphrase>   pair using a topic you chose yourself\n"
@@ -705,6 +759,19 @@ int main(int argc, char **argv) {
     return net_link(topic, pass, name, bird);
   }
   if (argc >= 2 && !strcmp(argv[1], "listen")) return net_listen();
+  if (argc >= 2 && (!strcmp(argv[1], "restart") || !strcmp(argv[1], "stop"))) {
+    int was = av_daemon_is_up();
+    if (was) {
+      if (system("pkill -x aviary >/dev/null 2>&1") != 0) { /* nothing to do */ }
+      for (int i = 0; i < 40 && av_daemon_is_up(); i++) usleep(50000);
+    }
+    if (!strcmp(argv[1], "stop")) {
+      printf(was ? "  stopped.\n" : "  it was not running.\n");
+      return 0;
+    }
+    return ensure_daemon() ? (printf("  daemon running.\n"), 0)
+                           : (fprintf(stderr, "  could not start it\n"), 1);
+  }
   if (argc >= 2 && (!strcmp(argv[1], "compose") || !strcmp(argv[1], "write")))
     return compose_main(argc - 1, argv + 1);
   if (argc >= 2 && !strcmp(argv[1], "render")) return render_main(argc - 1, argv + 1);

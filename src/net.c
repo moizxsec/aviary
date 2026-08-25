@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <signal.h>
+#include <sys/prctl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -329,7 +330,7 @@ static void derive_from_secret(const unsigned char *sec, char *topic, size_t tn,
 }
 
 /* Is a daemon listening on the local socket right now? */
-static int daemon_is_up(void) {
+int av_daemon_is_up(void) {
   char path[256];
   av_socket_path(path, sizeof(path));
   int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -353,12 +354,10 @@ static void nudge_daemon(void) {
     printf("  daemon restarted, and already watching.\n");
     return;
   }
-  if (daemon_is_up())
-    printf("  now restart the daemon so it picks this up:\n"
-           "      pkill -x aviary && (aviary daemon &)\n");
+  if (av_daemon_is_up())
+    printf("  restart the daemon so it picks this up:  aviary restart\n");
   else
-    printf("  now start the daemon:\n"
-           "      aviary daemon &\n");
+    printf("  the daemon will start itself the next time you send.\n");
 }
 
 static int save_pairing(const unsigned char *sec, const char *name,
@@ -650,8 +649,10 @@ static size_t on_data(void *ptr, size_t sz, size_t nm, void *user) {
   return total;
 }
 
-static volatile sig_atomic_t listening = 1;
-static void on_stop(int s) { (void)s; listening = 0; }
+/* The listener spends its life blocked inside curl_easy_perform, which will
+ * not return for a signal. Clearing a flag therefore achieves nothing — it has
+ * to leave immediately. It holds no state worth flushing. */
+static void on_stop(int s) { (void)s; _exit(0); }
 
 int net_listen(void) {
   AvConfig cfg;
@@ -660,8 +661,12 @@ int net_listen(void) {
     return 1;
   }
 
-  signal(SIGINT, on_stop);
-  signal(SIGTERM, on_stop);
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = on_stop;
+  sigemptyset(&sa.sa_mask);
+  sigaction(SIGINT, &sa, NULL);
+  sigaction(SIGTERM, &sa, NULL);
   signal(SIGPIPE, SIG_IGN);
   curl_global_init(CURL_GLOBAL_DEFAULT);
 
@@ -673,7 +678,7 @@ int net_listen(void) {
   fprintf(stderr, "[aviary] listening on %s/%s\n", NTFY_HOST, cfg.topic);
 
   int backoff = 1;
-  while (listening) {
+  for (;;) {
     /* Pick up anything sent while this machine was off, then stay connected.
      * ntfy holds recent messages, so a letter waits rather than being lost. */
     long since = L.last_time > 0 ? L.last_time + 1 : (long)time(NULL);
@@ -695,17 +700,15 @@ int net_listen(void) {
 
     CURLcode rc = curl_easy_perform(ch);
     curl_easy_cleanup(ch);
-    if (!listening) break;
 
     if (rc == CURLE_OK) backoff = 1;
     else {
       fprintf(stderr, "[aviary] relay dropped (%s), retrying in %ds\n",
               curl_easy_strerror(rc), backoff);
     }
-    for (int i = 0; i < backoff && listening; i++) sleep(1);
+    for (int i = 0; i < backoff; i++) sleep(1);
     if (backoff < 30) backoff *= 2;
   }
-
-  curl_global_cleanup();
+  /* not reached: on_stop leaves the process directly */
   return 0;
 }

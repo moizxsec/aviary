@@ -167,6 +167,42 @@ different set of decisions:
 - The palette leans on the **bright middle** of the fire ramp; a ramp made
   mostly of deep reds just reads as a dark smudge.
 
+## Two laptops
+
+One shared topic on [ntfy.sh](https://ntfy.sh) and one shared passphrase. No
+account, no server to run, nothing to pay for.
+
+```bash
+# on BOTH laptops, the same topic and passphrase:
+aviary link <topic> <passphrase> --name muez --bird owl
+```
+
+Pick the topic with `head -c 24 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9'`.
+Then:
+
+```bash
+aviary compose            # type a line, press enter
+```
+
+A bird lifts off your screen carrying it, and the same letter arrives on the
+other laptop as a bird flying in.
+
+**The relay never sees what you wrote.** Everything is encrypted with
+AES-256-GCM before it leaves — the key is SHA-256 of the passphrase, stretched
+20,000 rounds — so ntfy.sh only ever stores base64 ciphertext. A wrong
+passphrase fails the GCM tag and the letter simply will not open. The topic
+being publicly readable therefore does not matter, though a long random one is
+still worth using.
+
+ntfy holds recent messages, so if the other laptop is asleep the letter waits
+and flies when it wakes. The daemon records the last message it saw in
+`~/.config/aviary/since` and asks only for what came after.
+
+Each machine mints its own id on first link, so it ignores its own letters
+coming back around the loop.
+
+`~/.config/aviary/config` holds the key and is written mode 0600.
+
 ## The letters
 
 Each bird hands over a different object, in the state that bird left it in.

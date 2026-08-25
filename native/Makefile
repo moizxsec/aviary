@@ -3,7 +3,7 @@ SRCDIR  := src
 OBJDIR  := build
 
 CFLAGS  ?= -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE
-PKGS    := cairo x11 xext
+PKGS    := cairo x11 xext libcurl libcrypto
 CFLAGS  += $(shell pkg-config --cflags $(PKGS))
 LDLIBS  := $(shell pkg-config --libs $(PKGS)) -lm
 

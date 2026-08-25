@@ -7,6 +7,7 @@
  *   aviary sheet FILE.png        dump a pose sheet of the bird
  */
 #include "aviary.h"
+#include "net.h"
 
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
@@ -23,6 +24,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -39,16 +41,15 @@ int owl_sheet_main(int argc, char **argv);     /* render.c */
 
 /* --------------------------------------------------------------- socket -- */
 
-/* sun_path is only 108 bytes, so an over-long XDG_RUNTIME_DIR must fall back
- * rather than get silently truncated into a path nobody is listening on */
-static void socket_path(char *out, size_t n) {
-  const char *rt = getenv("XDG_RUNTIME_DIR");
-  if (rt && *rt) {
-    int len = snprintf(out, n, "%s/aviary.sock", rt);
-    if (len > 0 && (size_t)len < n && (size_t)len < sizeof(((struct sockaddr_un *)0)->sun_path))
-      return;
+static int client_send(const char *text, const char *from, const char *bird,
+                       int depart, double fx, double fy) {
+  int rc = av_local_send(text, from, bird, depart, fx, fy);
+  if (rc == 2) {
+    char path[256];
+    av_socket_path(path, sizeof(path));
+    fprintf(stderr, "no aviary running (%s) — start it with `aviary` first.\n", path);
   }
-  snprintf(out, n, "/tmp/aviary-%u.sock", (unsigned)getuid());
+  return rc ? 1 : 0;
 }
 
 static int fill_sun(struct sockaddr_un *a, const char *path) {
@@ -63,34 +64,7 @@ static int fill_sun(struct sockaddr_un *a, const char *path) {
   return 0;
 }
 
-static int client_send(const char *text, const char *from, const char *bird,
-                       int depart, double fx, double fy) {
-  char path[256];
-  socket_path(path, sizeof(path));
-
-  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0) { perror("socket"); return 1; }
-
-  struct sockaddr_un a;
-  if (fill_sun(&a, path) < 0) { close(fd); return 1; }
-
-  if (connect(fd, (struct sockaddr *)&a, sizeof(a)) < 0) {
-    fprintf(stderr, "no aviary listening at %s — start it with `aviary` first.\n", path);
-    close(fd);
-    return 1;
-  }
-
-  /* first line is "sender TAB bird TAB mode TAB fx TAB fy"; the rest is the
-   * letter itself */
-  dprintf(fd, "%s\t%s\t%s\t%.5f\t%.5f\n",
-          from ? from : "", bird ? bird : "",
-          depart ? "out" : "in", fx, fy);
-  size_t len = strlen(text);
-  if (write(fd, text, len) < 0) { /* nothing useful to do */ }
-  shutdown(fd, SHUT_WR);
-  close(fd);
-  return 0;
-}
+static void socket_path(char *out, size_t n) { av_socket_path(out, n); }
 
 static int server_listen(void) {
   char path[256];
@@ -418,6 +392,22 @@ static int daemon_main(int pixel_size) {
   signal(SIGTERM, on_signal);
   signal(SIGPIPE, SIG_IGN);
 
+  /* If this machine is linked to another one, run the relay listener as a
+   * child. Keeping it in its own process means a network hiccup can never
+   * stall the overlay, and it restarts cleanly on its own. */
+  AvConfig netcfg;
+  pid_t listener = -1;
+  if (av_config_load(&netcfg)) {
+    listener = fork();
+    if (listener == 0) {
+      _exit(net_listen());
+    }
+    if (listener > 0)
+      fprintf(stderr, "[aviary] linked — watching for letters from the other laptop\n");
+  } else {
+    fprintf(stderr, "[aviary] not linked (see `aviary link`) — local letters only\n");
+  }
+
   av_seed((uint64_t)time(NULL) ^ (uint64_t)getpid());
 
   Scene scene;
@@ -561,6 +551,7 @@ static int daemon_main(int pixel_size) {
     }
   }
 
+  if (listener > 0) { kill(listener, SIGTERM); waitpid(listener, NULL, 0); }
   fprintf(stderr, "\n[aviary] bye\n");
   if (scene.p.a) scene_free(&scene);
   overlay_hide(&o);
@@ -577,11 +568,15 @@ static int daemon_main(int pixel_size) {
 /* Write a message and watch it leave. The bird lifts off from the line under
  * the one you typed on, so it reads as though it is taking that text with it. */
 static int compose_main(int argc, char **argv) {
-  const char *from = "";
-  const char *bird = "pigeon";
+  AvConfig cfg;
+  int linked = av_config_load(&cfg);
+  const char *from = linked && cfg.name[0] ? cfg.name : "";
+  const char *bird = linked && cfg.bird[0] ? cfg.bird : "pigeon";
+  int local_only = 0;
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "--from") && i + 1 < argc) { from = argv[++i]; continue; }
     if (!strcmp(argv[i], "--bird") && i + 1 < argc) { bird = argv[++i]; continue; }
+    if (!strcmp(argv[i], "--local")) { local_only = 1; continue; }
     fprintf(stderr, "aviary compose: unknown option %s\n", argv[i]);
     return 1;
   }
@@ -611,9 +606,22 @@ static int compose_main(int argc, char **argv) {
     if (fy > 0.995) fy = 0.995;
   }
 
-  int rc = client_send(text, from, bird, 1, fx, fy);
-  if (rc == 0) printf("\033[2m  ...off it goes.\033[0m\n");
-  return rc;
+  /* the bird lifts off your screen carrying it ... */
+  client_send(text, from, bird, 1, fx, fy);
+
+  /* ... and the same letter goes to the other laptop */
+  if (!local_only && linked) {
+    if (net_publish(text, from, bird) == 0)
+      printf("\033[2m  ...off it goes.\033[0m\n");
+    else
+      printf("\033[2m  the bird left, but the relay did not take it.\033[0m\n");
+  } else if (!linked) {
+    printf("\033[2m  ...off it goes. (only your screen — run `aviary link` to reach"
+           " the other laptop)\033[0m\n");
+  } else {
+    printf("\033[2m  ...off it goes. (local only)\033[0m\n");
+  }
+  return 0;
 }
 
 static void usage(void) {
@@ -623,6 +631,11 @@ static void usage(void) {
     "  aviary send \"text\" [--from n] [--bird B]   a bird brings it to you\n"
     "  aviary compose [--from n] [--bird B]      type a line; a bird takes it away\n"
     "      B = phoenix | pigeon | owl | swallow\n"
+    "\n"
+    "  aviary link <topic> <passphrase> [--name N] [--bird B]\n"
+    "      pair this machine with another one, through ntfy.sh\n"
+    "  aviary listen                   watch the relay by hand (the daemon\n"
+    "                                  already does this when linked)\n"
     "  aviary render DIR               dump the delivery to PNGs (no X needed)\n"
     "  aviary sheet FILE.png           dump a pose sheet of the bird\n"
     "  aviary sizes FILE.png           compare sprite sizes against oneko\n"
@@ -646,6 +659,21 @@ int main(int argc, char **argv) {
     if (!tl) { fprintf(stderr, "aviary send: nothing to say\n"); return 1; }
     return client_send(text, from, bird, 0, -1, -1);
   }
+  if (argc >= 2 && !strcmp(argv[1], "link")) {
+    const char *topic = argc > 2 ? argv[2] : NULL;
+    const char *pass  = argc > 3 ? argv[3] : NULL;
+    const char *name = "", *bird = "pigeon";
+    for (int i = 4; i < argc; i++) {
+      if (!strcmp(argv[i], "--name") && i + 1 < argc) name = argv[++i];
+      else if (!strcmp(argv[i], "--bird") && i + 1 < argc) bird = argv[++i];
+    }
+    if (!topic || !pass) {
+      fprintf(stderr, "usage: aviary link <topic> <passphrase> [--name N] [--bird B]\n");
+      return 1;
+    }
+    return net_link(topic, pass, name, bird);
+  }
+  if (argc >= 2 && !strcmp(argv[1], "listen")) return net_listen();
   if (argc >= 2 && (!strcmp(argv[1], "compose") || !strcmp(argv[1], "write")))
     return compose_main(argc - 1, argv + 1);
   if (argc >= 2 && !strcmp(argv[1], "render")) return render_main(argc - 1, argv + 1);

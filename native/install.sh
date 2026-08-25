@@ -18,6 +18,8 @@ command -v cc >/dev/null 2>&1 || need_pkgs="$need_pkgs build-essential"
 pkg-config --exists cairo 2>/dev/null || need_pkgs="$need_pkgs libcairo2-dev"
 pkg-config --exists x11   2>/dev/null || need_pkgs="$need_pkgs libx11-dev"
 pkg-config --exists xext  2>/dev/null || need_pkgs="$need_pkgs libxext-dev"
+pkg-config --exists libcurl 2>/dev/null || need_pkgs="$need_pkgs libcurl4-openssl-dev"
+pkg-config --exists libcrypto 2>/dev/null || need_pkgs="$need_pkgs libssl-dev"
 
 if [ -n "$need_pkgs" ]; then
   say "missing build dependencies:$need_pkgs"
@@ -27,9 +29,9 @@ if [ -n "$need_pkgs" ]; then
     # shellcheck disable=SC2086
     sudo apt-get install -y --no-install-recommends $need_pkgs
   elif command -v dnf >/dev/null 2>&1; then
-    sudo dnf install -y gcc cairo-devel libX11-devel libXext-devel
+    sudo dnf install -y gcc cairo-devel libX11-devel libXext-devel libcurl-devel openssl-devel
   elif command -v pacman >/dev/null 2>&1; then
-    sudo pacman -S --needed --noconfirm base-devel cairo libx11 libxext
+    sudo pacman -S --needed --noconfirm base-devel cairo libx11 libxext curl openssl
   else
     die "install these yourself, then re-run:$need_pkgs"
   fi
@@ -83,5 +85,7 @@ case ":$PATH:" in
 esac
 
 printf '\n  done. try:\n'
-printf '    aviary send "first one" --bird pigeon\n'
-printf '    aviary compose --bird owl\n\n'
+printf '    aviary send "first one" --bird pigeon      # on your own screen\n'
+printf '    aviary compose --bird owl                  # a bird takes it away\n'
+printf '\n  to reach the other laptop, run the SAME line on both machines:\n'
+printf '    aviary link <topic> <passphrase> --name <you>\n\n'

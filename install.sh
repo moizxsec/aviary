@@ -59,7 +59,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=$BIN/aviary --pixel 2
+ExecStart=$BIN/aviary daemon --pixel 2
 Restart=on-failure
 RestartSec=3
 
@@ -85,7 +85,8 @@ case ":$PATH:" in
 esac
 
 printf '\n  done. try:\n'
-printf '    aviary send "first one" --bird pigeon      # on your own screen\n'
-printf '    aviary compose --bird owl                  # a bird takes it away\n'
-printf '\n  to reach the other laptop, run the SAME line on both machines:\n'
-printf '    aviary link <topic> <passphrase> --name <you>\n\n'
+printf '    aviary send "first one"      # fly one on your own screen\n'
+printf '\n  to reach the other laptop:\n'
+printf '    aviary invite --name <you>   # here; prints one short code\n'
+printf '    aviary join <code>           # there; once, and never again\n'
+printf '\n  then just:  aviary\n\n'

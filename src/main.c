@@ -626,19 +626,26 @@ static int compose_main(int argc, char **argv) {
 
 static void usage(void) {
   fprintf(stderr,
-    "aviary — tiny birds that carry letters across your desktop\n\n"
-    "  aviary                          run the daemon\n"
-    "  aviary send \"text\" [--from n] [--bird B]   a bird brings it to you\n"
-    "  aviary compose [--from n] [--bird B]      type a line; a bird takes it away\n"
+    "aviary — tiny birds that carry letters across your desktop\n"
+    "\n"
+    "  aviary                    write a line; a bird takes it to her\n"
+    "\n"
+    "setting up the pair, once\n"
+    "  aviary invite             on your laptop: prints a pairing code\n"
+    "  aviary join <code>        on hers: paste that code. that is all.\n"
+    "      --name <you>          how you are signed on the letters\n"
+    "      --bird <B>            your usual bird\n"
     "      B = phoenix | pigeon | owl | swallow\n"
     "\n"
-    "  aviary link <topic> <passphrase> [--name N] [--bird B]\n"
-    "      pair this machine with another one, through ntfy.sh\n"
-    "  aviary listen                   watch the relay by hand (the daemon\n"
-    "                                  already does this when linked)\n"
-    "  aviary render DIR               dump the delivery to PNGs (no X needed)\n"
-    "  aviary sheet FILE.png           dump a pose sheet of the bird\n"
-    "  aviary sizes FILE.png           compare sprite sizes against oneko\n"
+    "now and then\n"
+    "  aviary --bird owl         send with a different bird this once\n"
+    "  aviary send \"text\"        fly one on your own screen, nothing sent\n"
+    "  aviary daemon [--pixel N] run the overlay by hand (systemd does this)\n"
+    "\n"
+    "less often\n"
+    "  aviary link <topic> <passphrase>   pair using a topic you chose yourself\n"
+    "  aviary listen                      watch the relay by hand\n"
+    "  aviary render DIR / sheet F / sizes F   offline frame dumps\n"
     "\n"
     "  --pixel N   device pixels per sprite pixel (default 2; 1 = oneko 1:1)\n");
 }
@@ -658,6 +665,24 @@ int main(int argc, char **argv) {
     }
     if (!tl) { fprintf(stderr, "aviary send: nothing to say\n"); return 1; }
     return client_send(text, from, bird, 0, -1, -1);
+  }
+  if (argc >= 2 && !strcmp(argv[1], "invite")) {
+    const char *name = "", *bird = "pigeon";
+    for (int i = 2; i < argc; i++) {
+      if (!strcmp(argv[i], "--name") && i + 1 < argc) name = argv[++i];
+      else if (!strcmp(argv[i], "--bird") && i + 1 < argc) bird = argv[++i];
+    }
+    return net_invite(name, bird);
+  }
+  if (argc >= 2 && !strcmp(argv[1], "join")) {
+    const char *code = argc > 2 ? argv[2] : NULL;
+    const char *name = "", *bird = "pigeon";
+    for (int i = 3; i < argc; i++) {
+      if (!strcmp(argv[i], "--name") && i + 1 < argc) name = argv[++i];
+      else if (!strcmp(argv[i], "--bird") && i + 1 < argc) bird = argv[++i];
+    }
+    if (!code) { fprintf(stderr, "usage: aviary join <code> [--name N]\n"); return 1; }
+    return net_join(code, name, bird);
   }
   if (argc >= 2 && !strcmp(argv[1], "link")) {
     const char *topic = argc > 2 ? argv[2] : NULL;
@@ -684,16 +709,23 @@ int main(int argc, char **argv) {
   if (argc >= 2 && !strcmp(argv[1], "strip"))  return strip_main(argc - 1, argv + 1);
   if (argc >= 2 && (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help"))) { usage(); return 0; }
 
-  int pixel_size = 2;
-  for (int i = 1; i < argc; i++) {
-    if (!strcmp(argv[i], "--pixel") && i + 1 < argc) {
-      pixel_size = atoi(argv[++i]);
-      if (pixel_size < 1) pixel_size = 1;
-      if (pixel_size > 8) pixel_size = 8;
-    } else {
-      usage();
-      return 1;
+  if (argc >= 2 && !strcmp(argv[1], "daemon")) {
+    int pixel_size = 2;
+    for (int i = 2; i < argc; i++) {
+      if (!strcmp(argv[i], "--pixel") && i + 1 < argc) {
+        pixel_size = atoi(argv[++i]);
+        if (pixel_size < 1) pixel_size = 1;
+        if (pixel_size > 8) pixel_size = 8;
+      } else { usage(); return 1; }
     }
+    return daemon_main(pixel_size);
   }
-  return daemon_main(pixel_size);
+
+  /* Bare `aviary`, or `aviary --bird owl`, is the thing a person actually wants
+   * to do: write a line and watch a bird take it. The daemon runs itself, out
+   * of systemd. */
+  if (argc == 1 || argv[1][0] == '-') return compose_main(argc, argv);
+
+  usage();
+  return 1;
 }

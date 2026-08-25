@@ -183,37 +183,58 @@ different set of decisions:
 
 ## Two laptops
 
-One shared topic on [ntfy.sh](https://ntfy.sh) and one shared passphrase. No
-account, no server to run, nothing to pay for.
+One short code, typed once on each machine. No accounts, no server, nothing to pay for.
 
-```bash
-# on BOTH laptops, the same topic and passphrase:
-aviary link <topic> <passphrase> --name muez --bird owl
+**On your laptop:**
+
+```
+$ aviary invite --name muez --bird owl
+
+  This laptop is ready.
+
+      A50T-4Z40-6EHW-JG4R-F8TZ-TCXD
+
+  Type that on the other laptop, once.
 ```
 
-Pick the topic with `head -c 24 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9'`.
-Then:
+**On hers:**
 
 ```bash
-aviary compose            # type a line, press enter
+aviary join A50T-4Z40-6EHW-JG4R-F8TZ-TCXD --name her --bird pigeon
 ```
 
-A bird lifts off your screen carrying it, and the same letter arrives on the
-other laptop as a bird flying in.
+That is the whole setup. Both sides restart their daemon automatically. Neither
+of you ever types the code again.
 
-**The relay never sees what you wrote.** Everything is encrypted with
-AES-256-GCM before it leaves — the key is SHA-256 of the passphrase, stretched
-20,000 rounds — so ntfy.sh only ever stores base64 ciphertext. A wrong
-passphrase fails the GCM tag and the letter simply will not open. The topic
-being publicly readable therefore does not matter, though a long random one is
-still worth using.
+**From then on, sending is one word:**
 
-ntfy holds recent messages, so if the other laptop is asleep the letter waits
-and flies when it wakes. The daemon records the last message it saw in
-`~/.config/aviary/since` and asks only for what came after.
+```bash
+aviary
+```
 
-Each machine mints its own id on first link, so it ignores its own letters
-coming back around the loop.
+Type a line, press enter. A bird lifts off your screen carrying it, and the
+same letter arrives on hers as a bird flying in. `aviary --bird owl` to use a
+different one just this once.
+
+### What the code is
+
+The code is 120 bits of randomness in Crockford base32 — no I, L, O or U, so
+there is nothing to misread copying it across. **Both** the relay topic and the
+encryption key are derived from it, with different prefixes, so:
+
+- the topic is a hash of the secret and gives nothing away, even though anyone
+  can subscribe to it;
+- the key is the same secret run through 20,000 rounds of SHA-256.
+
+Everything is sealed with AES-256-GCM before it leaves, so ntfy.sh only ever
+stores base64 ciphertext. A wrong code fails the GCM tag and the letter simply
+will not open.
+
+ntfy holds recent messages, so if her laptop is asleep the letter waits and
+flies when it wakes. The daemon keeps the last message it saw in
+`~/.config/aviary/since` and asks only for what came after. Each machine mints
+its own id on first pairing, so it ignores its own letters coming back round
+the loop.
 
 `~/.config/aviary/config` holds the key and is written mode 0600.
 

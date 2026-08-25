@@ -28,6 +28,12 @@ void av_config_path(char *out, size_t n);
 int  net_link(const char *topic, const char *pass, const char *name,
               const char *bird);
 
+/* One short code carries everything. Both the topic and the encryption key are
+ * derived from it, so there is no second thing to remember and nothing to type
+ * more than once. */
+int  net_invite(const char *name, const char *bird);        /* mints a code */
+int  net_join(const char *code, const char *name, const char *bird);
+
 /* hand a letter to the relay for the other machine to pick up */
 int  net_publish(const char *text, const char *from, const char *bird);
 

@@ -258,6 +258,132 @@ static char *unseal(const unsigned char key[32], const char *b64) {
   return plain;
 }
 
+/* ------------------------------------------------------------- pairing -- */
+/*
+ * A single secret is the whole pairing. The topic and the encryption key are
+ * both derived from it, with different prefixes, so the topic can be public
+ * without giving anything away and there is only ever one thing to carry
+ * across to the other laptop.
+ */
+#define SECRET_LEN 15                    /* 120 bits, and 24 base32 characters */
+
+/* Crockford base32: exactly 32 symbols, and it leaves out I, L, O and U so
+ * there is nothing to misread when this is copied across by hand. */
+static const char B32[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+static void secret_to_code(const unsigned char *sec, char *out) {
+  unsigned long long acc = 0;
+  int bits = 0, w = 0, sym = 0;
+  for (int i = 0; i < SECRET_LEN; i++) {
+    acc = (acc << 8) | sec[i];
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      out[w++] = B32[(acc >> bits) & 31];
+      if (++sym % 4 == 0 && sym < 24) out[w++] = '-';
+    }
+  }
+  out[w] = 0;
+}
+
+static int code_to_secret(const char *code, unsigned char *sec) {
+  unsigned long long acc = 0;
+  int bits = 0, n = 0, sym = 0;
+  for (const char *p = code; *p; p++) {
+    char c = *p;
+    if (c == '-' || c == ' ' || c == '_') continue;
+    if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+    if (c == 'I' || c == 'L') c = '1';   /* the usual confusions, forgiven */
+    if (c == 'O') c = '0';
+    const char *at = strchr(B32, c);
+    if (!at || !c) return 0;
+    acc = (acc << 5) | (unsigned)(at - B32);
+    bits += 5;
+    sym++;
+    if (bits >= 8) {
+      bits -= 8;
+      if (n < SECRET_LEN) sec[n++] = (unsigned char)((acc >> bits) & 0xff);
+    }
+  }
+  return (sym == 24 && n == SECRET_LEN);
+}
+
+static void derive_from_secret(const unsigned char *sec, char *topic, size_t tn,
+                               unsigned char key[32]) {
+  unsigned char h[32];
+  unsigned char buf[64];
+
+  memcpy(buf, "aviary-topic-v1", 15);
+  memcpy(buf + 15, sec, SECRET_LEN);
+  SHA256(buf, 15 + SECRET_LEN, h);
+  char hex[65];
+  hex_encode(h, 12, hex);
+  snprintf(topic, tn, "av-%s", hex);     /* public, and says nothing */
+
+  memcpy(buf, "aviary-key-v1", 13);
+  memcpy(buf + 13, sec, SECRET_LEN);
+  SHA256(buf, 13 + SECRET_LEN, h);
+  /* stretch, so a leaked topic still gives no path to the key */
+  for (int i = 0; i < 20000; i++) SHA256(h, 32, h);
+  memcpy(key, h, 32);
+}
+
+/* systemd runs the daemon, so pick up new settings without asking the human */
+static void nudge_daemon(void) {
+  if (system("systemctl --user restart aviary.service >/dev/null 2>&1") == 0)
+    printf("  daemon restarted, and already watching.\n");
+  else
+    printf("  now restart the daemon:  systemctl --user restart aviary\n");
+}
+
+static int save_pairing(const unsigned char *sec, const char *name,
+                        const char *bird) {
+  AvConfig c;
+  memset(&c, 0, sizeof(c));
+  derive_from_secret(sec, c.topic, sizeof(c.topic), c.key);
+  snprintf(c.name, sizeof(c.name), "%s",
+           name && *name ? name : (getenv("USER") ? getenv("USER") : ""));
+  snprintf(c.bird, sizeof(c.bird), "%s", bird && *bird ? bird : "pigeon");
+  unsigned char r[8];
+  if (RAND_bytes(r, sizeof(r)) == 1) hex_encode(r, sizeof(r), c.self);
+  c.linked = 1;
+  return av_config_save(&c);
+}
+
+int net_invite(const char *name, const char *bird) {
+  unsigned char sec[SECRET_LEN];
+  if (RAND_bytes(sec, SECRET_LEN) != 1) {
+    fprintf(stderr, "aviary: no randomness available\n");
+    return 1;
+  }
+  if (save_pairing(sec, name, bird) != 0) return 1;
+
+  char code[40];
+  secret_to_code(sec, code);
+  printf("\n  This laptop is ready.\n\n");
+  printf("      \033[1m%s\033[0m\n\n", code);
+  printf("  Type that on the other laptop, once:\n\n");
+  printf("      aviary join %s --name <her name>\n\n", code);
+  printf("  After that neither of you ever types it again.\n");
+  nudge_daemon();
+  printf("\n");
+  return 0;
+}
+
+int net_join(const char *code, const char *name, const char *bird) {
+  unsigned char sec[SECRET_LEN];
+  if (!code || !code_to_secret(code, sec)) {
+    fprintf(stderr, "aviary join: that does not look like a pairing code\n");
+    fprintf(stderr, "  expected 24 letters and digits, like ABCD-EFGH-JKMN-PQRS-TUVW-XYZ2\n");
+    return 1;
+  }
+  if (save_pairing(sec, name, bird) != 0) return 1;
+  printf("\n  Paired.\n");
+  nudge_daemon();
+  printf("\n  Nothing else to do. Letters will just arrive.\n\n");
+  return 0;
+}
+
 /* ---------------------------------------------------------------- ntfy -- */
 
 int net_link(const char *topic, const char *pass, const char *name,

@@ -10,9 +10,9 @@ LDLIBS  := $(shell pkg-config --libs $(PKGS)) -lm
 SRCS    := $(wildcard $(SRCDIR)/*.c)
 OBJS    := $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(SRCS))
 
-PREFIX  ?= /usr/local
+PREFIX  ?= $(HOME)/.local
 
-.PHONY: all clean install uninstall check shots
+.PHONY: all clean install uninstall check shots service
 
 all: $(BIN)
 
@@ -38,8 +38,19 @@ shots:
 
 install: $(BIN)
 	install -Dm755 $(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
+	@echo "installed $(DESTDIR)$(PREFIX)/bin/$(BIN)"
+
+# run the daemon automatically for this user's graphical session
+service: install
+	@mkdir -p $(HOME)/.config/systemd/user
+	@printf '[Unit]\nDescription=Aviary\nAfter=graphical-session.target\nPartOf=graphical-session.target\n\n[Service]\nType=simple\nExecStart=$(PREFIX)/bin/$(BIN) --pixel 2\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=graphical-session.target\n' > $(HOME)/.config/systemd/user/aviary.service
+	systemctl --user daemon-reload
+	systemctl --user enable --now aviary.service
+	@echo "aviary will now start with your session" 
 
 uninstall:
+	-systemctl --user disable --now aviary.service 2>/dev/null
+	rm -f $(HOME)/.config/systemd/user/aviary.service
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN)
 
 clean:

@@ -47,7 +47,9 @@ static int client_send(const char *text, const char *from, const char *bird,
   if (rc == 2) {
     char path[256];
     av_socket_path(path, sizeof(path));
-    fprintf(stderr, "no aviary running (%s) — start it with `aviary` first.\n", path);
+    fprintf(stderr, "  no daemon on this machine, so nothing flew here.\n"
+                    "  start one and it will work from then on:  aviary daemon &\n");
+    (void)path;
   }
   return rc ? 1 : 0;
 }
@@ -607,21 +609,25 @@ static int compose_main(int argc, char **argv) {
   }
 
   /* the bird lifts off your screen carrying it ... */
-  client_send(text, from, bird, 1, fx, fy);
+  int flew = (client_send(text, from, bird, 1, fx, fy) == 0);
 
   /* ... and the same letter goes to the other laptop */
-  if (!local_only && linked) {
-    if (net_publish(text, from, bird) == 0)
-      printf("\033[2m  ...off it goes.\033[0m\n");
-    else
-      printf("\033[2m  the bird left, but the relay did not take it.\033[0m\n");
-  } else if (!linked) {
-    printf("\033[2m  ...off it goes. (only your screen — run `aviary link` to reach"
-           " the other laptop)\033[0m\n");
-  } else {
+  int sent = 0;
+  if (!local_only && linked) sent = (net_publish(text, from, bird) == 0);
+
+  if (!linked) {
+    printf("\033[2m  not paired yet, so this went nowhere.\033[0m\n");
+    printf("\033[2m  run `aviary invite` here, and `aviary join <code>` there.\033[0m\n");
+  } else if (local_only) {
     printf("\033[2m  ...off it goes. (local only)\033[0m\n");
+  } else if (sent && flew) {
+    printf("\033[2m  ...off it goes.\033[0m\n");
+  } else if (sent) {
+    printf("\033[2m  ...off it goes. (delivered, but no bird flew here)\033[0m\n");
+  } else {
+    printf("\033[2m  the relay would not take it — nothing was sent.\033[0m\n");
   }
-  return 0;
+  return sent || local_only ? 0 : 1;
 }
 
 static void usage(void) {

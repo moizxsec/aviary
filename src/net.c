@@ -328,12 +328,37 @@ static void derive_from_secret(const unsigned char *sec, char *topic, size_t tn,
   memcpy(key, h, 32);
 }
 
-/* systemd runs the daemon, so pick up new settings without asking the human */
+/* Is a daemon listening on the local socket right now? */
+static int daemon_is_up(void) {
+  char path[256];
+  av_socket_path(path, sizeof(path));
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) return 0;
+  struct sockaddr_un a;
+  memset(&a, 0, sizeof(a));
+  a.sun_family = AF_UNIX;
+  size_t l = strlen(path);
+  if (l >= sizeof(a.sun_path)) { close(fd); return 0; }
+  memcpy(a.sun_path, path, l);
+  int ok = connect(fd, (struct sockaddr *)&a, sizeof(a)) == 0;
+  close(fd);
+  return ok;
+}
+
+/* Pick up the new pairing without making the human work it out. systemd is the
+ * usual case but there is no user session at all under a bare root shell, so
+ * fall back to telling them exactly what to run. */
 static void nudge_daemon(void) {
-  if (system("systemctl --user restart aviary.service >/dev/null 2>&1") == 0)
+  if (system("systemctl --user restart aviary.service >/dev/null 2>&1") == 0) {
     printf("  daemon restarted, and already watching.\n");
+    return;
+  }
+  if (daemon_is_up())
+    printf("  now restart the daemon so it picks this up:\n"
+           "      pkill -x aviary && (aviary daemon &)\n");
   else
-    printf("  now restart the daemon:  systemctl --user restart aviary\n");
+    printf("  now start the daemon:\n"
+           "      aviary daemon &\n");
 }
 
 static int save_pairing(const unsigned char *sec, const char *name,

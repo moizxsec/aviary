@@ -49,7 +49,7 @@ say "installed $BIN/aviary"
 
 # ---- run it on login -----------------------------------------------------
 UNIT_DIR="$HOME/.config/systemd/user"
-if command -v systemctl >/dev/null 2>&1; then
+if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
   mkdir -p "$UNIT_DIR"
   cat > "$UNIT_DIR/aviary.service" <<UNIT
 [Unit]
@@ -69,7 +69,11 @@ UNIT
   systemctl --user daemon-reload 2>/dev/null || true
   systemctl --user enable --now aviary.service 2>/dev/null \
     && say "daemon enabled; it will start with your session" \
-    || say "could not enable the service — start it yourself with: aviary"
+    || say "could not enable the service — start it with: aviary daemon &"
+else
+  say "no systemd user session here (common under a root shell)."
+  say "start the daemon yourself, and add this to your shell rc:"
+  say "    aviary daemon >/dev/null 2>&1 &"
 fi
 
 # ---- PATH ----------------------------------------------------------------

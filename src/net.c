@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <signal.h>
+#include <fcntl.h>
 #include <sys/prctl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -259,6 +260,8 @@ static char *unseal(const unsigned char key[32], const char *b64) {
   return plain;
 }
 
+static void since_save(long t);   /* below */
+
 /* ------------------------------------------------------------- pairing -- */
 /*
  * A single secret is the whole pairing. The topic and the encryption key are
@@ -346,6 +349,33 @@ int av_daemon_is_up(void) {
   return ok;
 }
 
+/* Start the overlay in the background if it is not already there. Making the
+ * human run `aviary daemon` in another terminal is a trap: without an
+ * ampersand the shell simply sits there, which reads as the program hanging. */
+int av_ensure_daemon(void) {
+  if (av_daemon_is_up()) return 1;
+
+  char self[4096];
+  ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+  if (n <= 0) return 0;
+  self[n] = 0;
+
+  pid_t p = fork();
+  if (p < 0) return 0;
+  if (p == 0) {
+    setsid();
+    int null = open("/dev/null", O_RDWR);
+    if (null >= 0) { dup2(null, 0); dup2(null, 1); dup2(null, 2); if (null > 2) close(null); }
+    execl(self, "aviary", "daemon", (char *)NULL);
+    _exit(127);
+  }
+  for (int i = 0; i < 40; i++) {          /* up to two seconds */
+    usleep(50000);
+    if (av_daemon_is_up()) return 1;
+  }
+  return 0;
+}
+
 /* Pick up the new pairing without making the human work it out. systemd is the
  * usual case but there is no user session at all under a bare root shell, so
  * fall back to telling them exactly what to run. */
@@ -354,8 +384,13 @@ static void nudge_daemon(void) {
     printf("  daemon restarted, and already watching.\n");
     return;
   }
+  /* Bring it up right now rather than at the next send: a letter that arrives
+   * in between would otherwise be skipped, because a listener with no history
+   * resumes from the moment it first runs. */
   if (av_daemon_is_up())
     printf("  restart the daemon so it picks this up:  aviary restart\n");
+  else if (av_ensure_daemon())
+    printf("  daemon started, and already watching.\n");
   else
     printf("  the daemon will start itself the next time you send.\n");
 }
@@ -371,7 +406,14 @@ static int save_pairing(const unsigned char *sec, const char *name,
   unsigned char r[8];
   if (RAND_bytes(r, sizeof(r)) == 1) hex_encode(r, sizeof(r), c.self);
   c.linked = 1;
-  return av_config_save(&c);
+  int rc = av_config_save(&c);
+
+  /* Start the resume clock at the moment of pairing. Without this the very
+   * first listener run would resume from whenever it happened to start, and a
+   * letter sent to a laptop that had not been switched on yet was skipped
+   * rather than waiting. */
+  if (rc == 0) since_save((long)time(NULL) - 1);
+  return rc;
 }
 
 int net_invite(const char *name, const char *bird) {
@@ -425,8 +467,12 @@ int net_link(const char *topic, const char *pass, const char *name,
   snprintf(c.name, sizeof(c.name), "%s", name && *name ? name : (getenv("USER") ? getenv("USER") : ""));
   snprintf(c.bird, sizeof(c.bird), "%s", bird && *bird ? bird : "pigeon");
   derive_key(pass, c.key);
+  unsigned char r[8];
+  if (RAND_bytes(r, sizeof(r)) == 1) hex_encode(r, sizeof(r), c.self);
   c.linked = 1;
   if (av_config_save(&c) != 0) return 1;
+  /* same reason as save_pairing: the resume clock starts at pairing */
+  since_save((long)time(NULL) - 1);
 
   char path[512];
   av_config_path(path, sizeof(path));
@@ -547,6 +593,36 @@ typedef struct {
   long      last_time;
 } Listener;
 
+/* what to resume from: an exact message id if we have one, else a timestamp */
+static void mark_path(char *out, size_t n) {
+  char cfg[400];
+  av_config_path(cfg, sizeof(cfg));
+  char *slash = strrchr(cfg, '/');
+  if (slash) *slash = 0;
+  snprintf(out, n, "%.*s/mark", (int)(n > 16 ? n - 8 : 8), cfg);
+}
+
+static void mark_load(char *id, size_t n) {
+  char p[512];
+  mark_path(p, sizeof(p));
+  FILE *f = fopen(p, "r");
+  id[0] = 0;
+  if (!f) return;
+  if (!fgets(id, (int)n, f)) id[0] = 0;
+  char *nl = strchr(id, '\n');
+  if (nl) *nl = 0;
+  fclose(f);
+}
+
+static void mark_save(const char *id) {
+  char p[512];
+  mark_path(p, sizeof(p));
+  FILE *f = fopen(p, "w");
+  if (!f) return;
+  fprintf(f, "%s\n", id);
+  fclose(f);
+}
+
 static void since_path(char *out, size_t n) {
   char cfg[400];
   av_config_path(cfg, sizeof(cfg));
@@ -612,6 +688,7 @@ static void handle_line(Listener *L, const char *line) {
   if (L->cfg->self[0] && !strcmp(sender, L->cfg->self)) {
     /* our own letter, come back around the loop */
     snprintf(L->last_id, sizeof(L->last_id), "%s", id);
+    if (id[0]) mark_save(id);
     long t0 = json_num(line, "time");
     if (t0 > L->last_time) { L->last_time = t0; since_save(t0); }
     free(plain);
@@ -626,6 +703,7 @@ static void handle_line(Listener *L, const char *line) {
             from[0] ? from : "somewhere", bird);
 
   snprintf(L->last_id, sizeof(L->last_id), "%s", id);
+  if (id[0]) mark_save(id);
   long t = json_num(line, "time");
   if (t > L->last_time) { L->last_time = t; since_save(t); }
   free(plain);
@@ -674,16 +752,23 @@ int net_listen(void) {
   memset(&L, 0, sizeof(L));
   L.cfg = &cfg;
   L.last_time = since_load();
+  mark_load(L.last_id, sizeof(L.last_id));
 
   fprintf(stderr, "[aviary] listening on %s/%s\n", NTFY_HOST, cfg.topic);
 
   int backoff = 1;
   for (;;) {
     /* Pick up anything sent while this machine was off, then stay connected.
-     * ntfy holds recent messages, so a letter waits rather than being lost. */
-    long since = L.last_time > 0 ? L.last_time + 1 : (long)time(NULL);
-    char url[512];
-    snprintf(url, sizeof(url), "%s/%s/json?since=%ld", NTFY_HOST, cfg.topic, since);
+     * ntfy holds recent messages, so a letter waits rather than being lost.
+     * Resuming from the last message id is exact; resuming from a timestamp
+     * loses or repeats anything that shared a second with it. */
+    char url[640];
+    if (L.last_id[0])
+      snprintf(url, sizeof(url), "%s/%s/json?since=%s", NTFY_HOST, cfg.topic, L.last_id);
+    else if (L.last_time > 0)
+      snprintf(url, sizeof(url), "%s/%s/json?since=%ld", NTFY_HOST, cfg.topic, L.last_time);
+    else
+      snprintf(url, sizeof(url), "%s/%s/json?since=%ld", NTFY_HOST, cfg.topic, (long)time(NULL));
 
     CURL *ch = curl_easy_init();
     if (!ch) break;

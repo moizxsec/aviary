@@ -51,6 +51,7 @@ service: install
 uninstall:
 	-systemctl --user disable --now aviary.service 2>/dev/null
 	rm -f $(HOME)/.config/systemd/user/aviary.service
+	rm -f $(HOME)/.config/autostart/aviary.desktop
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN)
 
 clean:

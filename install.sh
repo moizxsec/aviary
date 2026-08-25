@@ -48,6 +48,23 @@ install -m755 "$SRC/aviary" "$BIN/aviary"
 say "installed $BIN/aviary"
 
 # ---- run it on login -----------------------------------------------------
+# Two belts. A desktop autostart entry works on GNOME, KDE, XFCE and anything
+# else that reads XDG autostart, including sessions with no systemd user bus.
+# The systemd unit is nicer where it exists because it restarts on failure.
+AUTO_DIR="$HOME/.config/autostart"
+mkdir -p "$AUTO_DIR"
+cat > "$AUTO_DIR/aviary.desktop" <<DESK
+[Desktop Entry]
+Type=Application
+Name=Aviary
+Comment=Tiny birds that carry letters
+Exec=$BIN/aviary daemon --pixel 2
+Terminal=false
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+DESK
+say "will start on login (${AUTO_DIR}/aviary.desktop)"
+
 UNIT_DIR="$HOME/.config/systemd/user"
 if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
   mkdir -p "$UNIT_DIR"
@@ -71,9 +88,7 @@ UNIT
     && say "daemon enabled; it will start with your session" \
     || say "could not enable the service — start it with: aviary daemon &"
 else
-  say "no systemd user session here (common under a root shell)."
-  say "start the daemon yourself, and add this to your shell rc:"
-  say "    aviary daemon >/dev/null 2>&1 &"
+  say "no systemd user session here — the autostart entry covers it"
 fi
 
 # ---- PATH ----------------------------------------------------------------

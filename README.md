@@ -230,11 +230,26 @@ Everything is sealed with AES-256-GCM before it leaves, so ntfy.sh only ever
 stores base64 ciphertext. A wrong code fails the GCM tag and the letter simply
 will not open.
 
-ntfy holds recent messages, so if her laptop is asleep the letter waits and
-flies when it wakes. The daemon keeps the last message it saw in
-`~/.config/aviary/since` and asks only for what came after. Each machine mints
-its own id on first pairing, so it ignores its own letters coming back round
-the loop.
+### Reboots and letters that arrive while you are away
+
+ntfy holds recent messages for about twelve hours, so a letter sent to a laptop
+that is off waits for it rather than being lost. Three things make that work:
+
+- The resume clock starts **at pairing**, not at the first time the daemon runs,
+  so a letter sent before that machine has ever been switched on is still there.
+- After every letter the daemon records **the message id** in
+  `~/.config/aviary/mark` and resumes from it. Resuming from a timestamp loses
+  or repeats anything that shared a second with it; an id is exact.
+- Each machine mints its own id when it pairs, so it ignores its own letters
+  coming back round the loop.
+
+The daemon is started by an XDG autostart entry, and by a systemd user service
+where there is a user session to put one in. Either way it comes back after a
+reboot. It also starts itself the moment you send something, so the only way to
+have no daemon is to have never used it.
+
+If the laptop is off for more than about half a day the relay will have dropped
+the message. Self-hosting ntfy raises that limit to whatever you like.
 
 `~/.config/aviary/config` holds the key and is written mode 0600.
 

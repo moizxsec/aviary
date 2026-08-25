@@ -275,6 +275,30 @@ static void overlay_resolve_origin(Overlay *o, double fx, double fy,
   *ay = ry + fy * wa.height;
 }
 
+/* A laptop gets docked, unplugged, rotated. The overlay is created at one size
+ * and would otherwise keep drawing at that size forever — half a screen, or off
+ * the edge of it. Check before every delivery and rebuild if the root window
+ * has changed underneath us. */
+static int overlay_sync_size(Overlay *o) {
+  XWindowAttributes wa;
+  if (!XGetWindowAttributes(o->dpy, o->root, &wa)) return 0;
+  if (wa.width == o->w && wa.height == o->h) return 0;
+
+  fprintf(stderr, "[aviary] screen is now %dx%d (was %dx%d) — rebuilding\n",
+          wa.width, wa.height, o->w, o->h);
+  o->w = wa.width;
+  o->h = wa.height;
+
+  XMoveResizeWindow(o->dpy, o->win, 0, 0, (unsigned)o->w, (unsigned)o->h);
+  XFlush(o->dpy);
+  cairo_xlib_surface_set_size(o->xsurf, o->w, o->h);
+
+  int size = o->px.size;
+  pixel_free(&o->px);
+  pixel_init(&o->px, o->w, o->h, size);
+  return 1;
+}
+
 static void overlay_show(Overlay *o) {
   if (o->mapped) return;
   overlay_input_region(o, 0, 0, 0, 0);
@@ -490,6 +514,7 @@ static int daemon_main(int pixel_size) {
       memmove(&queue[0], &queue[1], sizeof(Delivery) * (size_t)(qn - 1));
       qn--;
       if (scene.p.a) scene_free(&scene);
+      overlay_sync_size(&o);
       if (d.mode == SM_DEPART) {
         double ax, ay;
         overlay_resolve_origin(&o, d.fx, d.fy, &ax, &ay);
@@ -591,34 +616,6 @@ static int daemon_main(int pixel_size) {
 
 /* Write a message and watch it leave. The bird lifts off from the line under
  * the one you typed on, so it reads as though it is taking that text with it. */
-/* Start the overlay in the background if it is not already there. Making the
- * human run `aviary daemon` in another terminal is a trap: run it without an
- * ampersand and the shell simply sits there, which reads as the program having
- * hung. */
-static int ensure_daemon(void) {
-  if (av_daemon_is_up()) return 1;
-
-  char self[PATH_MAX];
-  ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
-  if (n <= 0) return 0;
-  self[n] = 0;
-
-  pid_t p = fork();
-  if (p < 0) return 0;
-  if (p == 0) {
-    setsid();
-    int null = open("/dev/null", O_RDWR);
-    if (null >= 0) { dup2(null, 0); dup2(null, 1); dup2(null, 2); if (null > 2) close(null); }
-    execl(self, "aviary", "daemon", (char *)NULL);
-    _exit(127);
-  }
-  for (int i = 0; i < 40; i++) {         /* up to two seconds */
-    usleep(50000);
-    if (av_daemon_is_up()) return 1;
-  }
-  return 0;
-}
-
 static int compose_main(int argc, char **argv) {
   AvConfig cfg;
   int linked = av_config_load(&cfg);
@@ -633,7 +630,7 @@ static int compose_main(int argc, char **argv) {
     return 1;
   }
 
-  ensure_daemon();
+  av_ensure_daemon();
 
   int rows = 0, cols = 0;
   int have_cells = term_cells(&rows, &cols);
@@ -762,14 +759,14 @@ int main(int argc, char **argv) {
   if (argc >= 2 && (!strcmp(argv[1], "restart") || !strcmp(argv[1], "stop"))) {
     int was = av_daemon_is_up();
     if (was) {
-      if (system("pkill -x aviary >/dev/null 2>&1") != 0) { /* nothing to do */ }
+      if (system("pkill -x -u \"$(id -u)\" aviary >/dev/null 2>&1") != 0) { /* nothing to do */ }
       for (int i = 0; i < 40 && av_daemon_is_up(); i++) usleep(50000);
     }
     if (!strcmp(argv[1], "stop")) {
       printf(was ? "  stopped.\n" : "  it was not running.\n");
       return 0;
     }
-    return ensure_daemon() ? (printf("  daemon running.\n"), 0)
+    return av_ensure_daemon() ? (printf("  daemon running.\n"), 0)
                            : (fprintf(stderr, "  could not start it\n"), 1);
   }
   if (argc >= 2 && (!strcmp(argv[1], "compose") || !strcmp(argv[1], "write")))

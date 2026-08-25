@@ -4,12 +4,8 @@
 *.token
 
 # build output
-node_modules/
-native/build/
-native/aviary
+build/
+aviary
 
 # generated frames
 shots/
-native/shots/
-
-*.log

@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # Aviary installer.
-#   curl -fsSL <raw-url>/native/install.sh | sh
+#   curl -fsSL <raw-url>/install.sh | sh
 # or, from a clone:  ./install.sh
 set -eu
 

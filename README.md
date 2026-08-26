@@ -25,6 +25,8 @@ not burn: he lands, walks over with the letter tied to his leg, bends down and
 unties it, then stands on the paper waiting to be noticed. When you close the
 letter he crouches, claps his wings, and goes.
 
+Full command reference: **[MANUAL.md](MANUAL.md)**
+
 ## Install
 
 ```bash

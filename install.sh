@@ -18,6 +18,7 @@ command -v cc >/dev/null 2>&1 || need_pkgs="$need_pkgs build-essential"
 pkg-config --exists cairo 2>/dev/null || need_pkgs="$need_pkgs libcairo2-dev"
 pkg-config --exists x11   2>/dev/null || need_pkgs="$need_pkgs libx11-dev"
 pkg-config --exists xext  2>/dev/null || need_pkgs="$need_pkgs libxext-dev"
+pkg-config --exists xrandr 2>/dev/null || need_pkgs="$need_pkgs libxrandr-dev"
 pkg-config --exists libcurl 2>/dev/null || need_pkgs="$need_pkgs libcurl4-openssl-dev"
 pkg-config --exists libcrypto 2>/dev/null || need_pkgs="$need_pkgs libssl-dev"
 
@@ -29,9 +30,9 @@ if [ -n "$need_pkgs" ]; then
     # shellcheck disable=SC2086
     sudo apt-get install -y --no-install-recommends $need_pkgs
   elif command -v dnf >/dev/null 2>&1; then
-    sudo dnf install -y gcc cairo-devel libX11-devel libXext-devel libcurl-devel openssl-devel
+    sudo dnf install -y gcc cairo-devel libX11-devel libXext-devel libXrandr-devel libcurl-devel openssl-devel
   elif command -v pacman >/dev/null 2>&1; then
-    sudo pacman -S --needed --noconfirm base-devel cairo libx11 libxext curl openssl
+    sudo pacman -S --needed --noconfirm base-devel cairo libx11 libxext libxrandr curl openssl
   else
     die "install these yourself, then re-run:$need_pkgs"
   fi
@@ -73,12 +74,16 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/d
 Description=Aviary — tiny birds that carry letters
 After=graphical-session.target
 PartOf=graphical-session.target
+# X may not be up the instant the session target is reached, and the daemon
+# waits for it rather than failing — but if it ever does give up, systemd must
+# keep trying instead of hitting its start limit and never trying again.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 ExecStart=$BIN/aviary daemon --pixel 2
 Restart=on-failure
-RestartSec=3
+RestartSec=5
 
 [Install]
 WantedBy=graphical-session.target
@@ -104,7 +109,8 @@ case ":$PATH:" in
 esac
 
 printf '\n  done. try:\n'
-printf '    aviary send "first one"      # fly one on your own screen\n'
+printf '    aviary send --local "first one"   # fly one on your own screen\n'
+printf '    aviary status                     # if anything looks wrong\n'
 printf '\n  to reach the other laptop:\n'
 printf '    aviary invite --name <you>   # here; prints one short code\n'
 printf '    aviary join <code>           # there; once, and never again\n'

@@ -44,7 +44,7 @@ To build by hand instead:
 ## Build and run
 
 ```bash
-sudo apt install libcairo2-dev libx11-dev libxext-dev   # build deps
+sudo apt install libcairo2-dev libx11-dev libxext-dev libxrandr-dev   # build deps
 make
 ./aviary                    # the daemon; nothing appears yet
 ```
@@ -52,11 +52,13 @@ make
 In another shell:
 
 ```bash
-./aviary send "..." --from muez --bird swallow    # it rains for this one
-./aviary send "..." --from muez --bird owl
-./aviary send "..." --from muez --bird pigeon
-./aviary send "..." --from muez --bird phoenix     # the default
+./aviary send --local "..." --bird swallow    # it rains for this one
+./aviary send --local "..." --bird owl
+./aviary send --local "..." --bird pigeon
+./aviary send --local "..." --bird phoenix
 ```
+
+Without `--local`, `send` goes to the other laptop as well as flying here.
 
 `make install` puts it in `/usr/local/bin`.
 
@@ -250,6 +252,23 @@ where there is a user session to put one in. Either way it comes back after a
 reboot. It also starts itself the moment you send something, so the only way to
 have no daemon is to have never used it.
 
+At login the daemon can be up before the X server is, and a systemd user unit
+may have no `DISPLAY` in its environment at all. It waits a minute for a server
+rather than failing, tries `:0` and `:1` if nothing was named, and the unit is
+set never to hit its start limit — a daemon that gives up five times in fifteen
+seconds and is then never tried again is how a working install becomes a dead
+one across a single reboot.
+
+Nothing it prints at login has anywhere to go, so it keeps
+`~/.config/aviary/daemon.log`. `aviary status` prints the tail of it along with
+everything else that has to be true for a letter to arrive.
+
+Re-pairing is picked up without a restart. Sending re-reads the config every
+time but the listener only read it once, so a daemon left running across an
+`aviary join` went on watching the topic it was born with: letters went out
+fine and nothing ever came back, which from that end is invisible. It now
+watches the config file and re-subscribes when it moves.
+
 If the laptop is off for more than about half a day the relay will have dropped
 the message. Self-hosting ntfy raises that limit to whatever you like.
 
@@ -323,7 +342,14 @@ so `make check` is a real test.
   picom-style compositors all qualify.
 - Under **XWayland** (Ubuntu's default GNOME session) it runs, but an X window
   cannot stay above native Wayland clients. `oneko` has the same limitation.
-- The overlay covers the screen with an **empty XShape input region**, so every
+- With a **second screen** plugged in, both are one X screen as far as Xlib is
+  concerned — the root window is the two of them side by side. A window
+  covering that root spans both, and anything centred in it lands on the seam.
+  The overlay covers one monitor instead, chosen per delivery through RandR:
+  the one holding the terminal you typed in, or the one under the pointer for a
+  letter arriving. Docking, unplugging and rotating are all picked up the same
+  way, because the geometry is looked up fresh every time and never cached.
+- The overlay covers that screen with an **empty XShape input region**, so every
   click falls through to whatever is underneath. The letter is the one
   rectangle that catches them.
 - The trigger socket is a unix socket in `$XDG_RUNTIME_DIR`, mode 0600. Nothing

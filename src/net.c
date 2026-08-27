@@ -73,6 +73,39 @@ void av_config_path(char *out, size_t n) {
   else snprintf(out, n, "%s/.config/aviary/config", home ? home : ".");
 }
 
+/* mkdir -p on the directory holding a file */
+static void ensure_dir_of(const char *file) {
+  char dir[512];
+  snprintf(dir, sizeof(dir), "%s", file);
+  char *slash = strrchr(dir, '/');
+  if (!slash) return;
+  *slash = 0;
+
+  char build[512];
+  size_t n = 0;
+  for (const char *p = dir; ; p++) {
+    if (*p == '/' || *p == 0) {
+      build[n] = 0;
+      if (n > 0) mkdir(build, 0700);
+    }
+    if (*p == 0) break;
+    build[n++] = *p;
+    if (n >= sizeof(build) - 1) break;
+  }
+}
+
+/* Everything aviary remembers lives in one directory. Building those paths in
+ * three different places is how they drift apart — and the pid file is written
+ * before anything has ever paired, so the directory cannot be assumed. */
+void av_config_file(char *out, size_t n, const char *leaf) {
+  char cfg[400];
+  av_config_path(cfg, sizeof(cfg));
+  char *slash = strrchr(cfg, '/');
+  if (slash) *slash = 0;
+  snprintf(out, n, "%s/%s", cfg, leaf);
+  ensure_dir_of(out);
+}
+
 static void hex_encode(const unsigned char *in, size_t n, char *out) {
   static const char *H = "0123456789abcdef";
   for (size_t i = 0; i < n; i++) {
@@ -134,24 +167,7 @@ int av_config_load(AvConfig *c) {
 int av_config_save(const AvConfig *c) {
   char path[512];
   av_config_path(path, sizeof(path));
-
-  char dir[512];
-  snprintf(dir, sizeof(dir), "%s", path);
-  char *slash = strrchr(dir, '/');
-  if (slash) {
-    *slash = 0;
-    char build[512];
-    size_t n = 0;
-    for (const char *p = dir; ; p++) {
-      if (*p == '/' || *p == 0) {
-        build[n] = 0;
-        if (n > 0) mkdir(build, 0700);
-      }
-      if (*p == 0) break;
-      build[n++] = *p;
-      if (n >= sizeof(build) - 1) break;
-    }
-  }
+  ensure_dir_of(path);
 
   FILE *f = fopen(path, "w");
   if (!f) { perror("aviary: config"); return 1; }
@@ -260,7 +276,10 @@ static char *unseal(const unsigned char key[32], const char *b64) {
   return plain;
 }
 
-static void since_save(long t);   /* below */
+static void since_save(long t);          /* below */
+static long since_load(void);            /* below */
+static void mark_save(const char *id);   /* below */
+static void mark_load(char *id, size_t n); /* below */
 
 /* ------------------------------------------------------------- pairing -- */
 /*
@@ -349,6 +368,60 @@ int av_daemon_is_up(void) {
   return ok;
 }
 
+/* The running daemon records its pid so that stopping it does not mean asking
+ * pkill to match a name — which, since the process doing the asking is also
+ * called aviary, would have it kill itself first. */
+static void av_pid_path(char *out, size_t n) { av_config_file(out, n, "pid"); }
+
+void av_daemon_claim(void) {
+  char p[512];
+  av_pid_path(p, sizeof(p));
+  FILE *f = fopen(p, "w");
+  if (!f) return;
+  fprintf(f, "%d\n", (int)getpid());
+  fclose(f);
+}
+
+void av_daemon_release(void) {
+  char p[512];
+  av_pid_path(p, sizeof(p));
+  if (av_daemon_pid() == (int)getpid()) unlink(p);
+}
+
+int av_daemon_pid(void) {
+  char p[512];
+  av_pid_path(p, sizeof(p));
+  FILE *f = fopen(p, "r");
+  if (!f) return 0;
+  int pid = 0;
+  if (fscanf(f, "%d", &pid) != 1) pid = 0;
+  fclose(f);
+  if (pid > 1 && kill(pid, 0) == 0) return pid;
+  return 0;
+}
+
+/* Ask politely, wait, then insist. Returns 1 if anything was actually there. */
+int av_daemon_stop(void) {
+  int was = av_daemon_is_up() || av_daemon_pid() > 0;
+  int pid = av_daemon_pid();
+  if (pid > 0) {
+    kill(pid, SIGTERM);
+    for (int i = 0; i < 40 && kill(pid, 0) == 0; i++) usleep(50000);
+    if (kill(pid, 0) == 0) kill(pid, SIGKILL);
+  }
+  /* An older daemon, from before there was a pid file, still has to go. It is
+   * safe to name-match here only because our own pid is spared explicitly. */
+  if (av_daemon_is_up()) {
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd),
+             "pgrep -x -u %u aviary 2>/dev/null | grep -v -w %d | xargs -r kill 2>/dev/null",
+             (unsigned)getuid(), (int)getpid());
+    if (system(cmd) != 0) { /* nothing to do */ }
+    for (int i = 0; i < 40 && av_daemon_is_up(); i++) usleep(50000);
+  }
+  return was;
+}
+
 /* Start the overlay in the background if it is not already there. Making the
  * human run `aviary daemon` in another terminal is a trap: without an
  * ampersand the shell simply sits there, which reads as the program hanging. */
@@ -376,21 +449,25 @@ int av_ensure_daemon(void) {
   return 0;
 }
 
-/* Pick up the new pairing without making the human work it out. systemd is the
- * usual case but there is no user session at all under a bare root shell, so
- * fall back to telling them exactly what to run. */
+int av_daemon_bounce(void) {
+  if (system("systemctl --user restart aviary.service >/dev/null 2>&1") == 0 &&
+      av_daemon_is_up())
+    return 1;
+  av_daemon_stop();
+  return av_ensure_daemon();
+}
+
+/* Pick up the new pairing without making the human work it out.
+ *
+ * This one matters more than it looks. Sending re-reads the config every time,
+ * but the listener only reads it when it starts — so a daemon left running
+ * across a re-pairing goes on watching the topic it was born with. Letters go
+ * out fine and nothing ever comes back, which from this end is invisible.
+ * The listener now notices the file changing on its own; bouncing here is the
+ * belt to that pair of braces, and covers a daemon built before it did. */
 static void nudge_daemon(void) {
-  if (system("systemctl --user restart aviary.service >/dev/null 2>&1") == 0) {
-    printf("  daemon restarted, and already watching.\n");
-    return;
-  }
-  /* Bring it up right now rather than at the next send: a letter that arrives
-   * in between would otherwise be skipped, because a listener with no history
-   * resumes from the moment it first runs. */
-  if (av_daemon_is_up())
-    printf("  restart the daemon so it picks this up:  aviary restart\n");
-  else if (av_ensure_daemon())
-    printf("  daemon started, and already watching.\n");
+  if (av_daemon_bounce())
+    printf("  daemon running, and already watching.\n");
   else
     printf("  the daemon will start itself the next time you send.\n");
 }
@@ -412,7 +489,13 @@ static int save_pairing(const unsigned char *sec, const char *name,
    * first listener run would resume from whenever it happened to start, and a
    * letter sent to a laptop that had not been switched on yet was skipped
    * rather than waiting. */
-  if (rc == 0) since_save((long)time(NULL) - 1);
+  if (rc == 0) {
+    since_save((long)time(NULL) - 1);
+    /* The old mark names a message in the old topic. Handed to the relay for a
+     * topic it does not belong to, it is not an error — everything still held
+     * for that topic comes back at once. Clear it and resume by clock. */
+    mark_save("");
+  }
   return rc;
 }
 
@@ -473,6 +556,7 @@ int net_link(const char *topic, const char *pass, const char *name,
   if (av_config_save(&c) != 0) return 1;
   /* same reason as save_pairing: the resume clock starts at pairing */
   since_save((long)time(NULL) - 1);
+  mark_save("");
 
   char path[512];
   av_config_path(path, sizeof(path));
@@ -543,6 +627,81 @@ int net_publish(const char *text, const char *from, const char *bird) {
   return 0;
 }
 
+/* ---- what is actually going on ----------------------------------------- */
+
+typedef struct { int lines; } Counter;
+
+static size_t count_lines(void *p, size_t sz, size_t n, void *u) {
+  Counter *c = u;
+  const char *in = p;
+  for (size_t i = 0; i < sz * n; i++) if (in[i] == '\n') c->lines++;
+  return sz * n;
+}
+
+static void stamp(long t, char *out, size_t n) {
+  if (t <= 0) { snprintf(out, n, "never"); return; }
+  time_t tt = (time_t)t;
+  struct tm tmv;
+  if (!localtime_r(&tt, &tmv) || !strftime(out, n, "%Y-%m-%d %H:%M:%S", &tmv))
+    snprintf(out, n, "%ld", t);
+}
+
+/* Everything about the pairing that can be told without an X server. Kept
+ * here because this is where all of it is written. */
+void net_status_print(void) {
+  char path[512];
+  av_config_path(path, sizeof(path));
+
+  AvConfig c;
+  if (!av_config_load(&c)) {
+    printf("  paired      no — run `aviary invite` here, `aviary join <code>` there\n");
+    printf("  config      %s (absent)\n", path);
+    return;
+  }
+
+  printf("  paired      yes — as %s, usual bird %s\n",
+         c.name[0] ? c.name : "(no name)", c.bird);
+  printf("  topic       %s\n", c.topic);
+  printf("  this laptop %s\n", c.self[0] ? c.self : "(no id — it will hear its own letters)");
+  printf("  config      %s\n", path);
+
+  char id[64];
+  mark_load(id, sizeof(id));
+  long since = since_load();
+  char when[64];
+  stamp(since, when, sizeof(when));
+  if (id[0]) printf("  resume      from message %s\n", id);
+  else       printf("  resume      from the clock, %s\n", when);
+
+  /* Ask the relay what it is holding for this topic. A letter sent while the
+   * laptop was off is still there until it expires, so "3 held" during a
+   * silence means the listener is the problem, not the sender. */
+  char url[640];
+  snprintf(url, sizeof(url), "%s/%s/json?poll=1&since=%ld",
+           NTFY_HOST, c.topic, since > 0 ? since : (long)time(NULL) - 43200);
+
+  Counter cnt = { 0 };
+  CURL *ch = curl_easy_init();
+  if (!ch) return;
+  curl_easy_setopt(ch, CURLOPT_URL, url);
+  curl_easy_setopt(ch, CURLOPT_WRITEFUNCTION, count_lines);
+  curl_easy_setopt(ch, CURLOPT_WRITEDATA, &cnt);
+  curl_easy_setopt(ch, CURLOPT_TIMEOUT, 15L);
+  curl_easy_setopt(ch, CURLOPT_USERAGENT, "aviary/1");
+  CURLcode rc = curl_easy_perform(ch);
+  long http = 0;
+  curl_easy_getinfo(ch, CURLINFO_RESPONSE_CODE, &http);
+  curl_easy_cleanup(ch);
+
+  if (rc != CURLE_OK)
+    printf("  relay       unreachable (%s)\n", curl_easy_strerror(rc));
+  else if (http < 200 || http >= 300)
+    printf("  relay       refused us (HTTP %ld)\n", http);
+  else
+    printf("  relay       reachable — %d letter%s still held for this topic\n",
+           cnt.lines, cnt.lines == 1 ? "" : "s");
+}
+
 /* ---- the listener ------------------------------------------------------ */
 
 /* Pull one JSON string field out of a line. No parser needed: ntfy's stream is
@@ -594,13 +753,7 @@ typedef struct {
 } Listener;
 
 /* what to resume from: an exact message id if we have one, else a timestamp */
-static void mark_path(char *out, size_t n) {
-  char cfg[400];
-  av_config_path(cfg, sizeof(cfg));
-  char *slash = strrchr(cfg, '/');
-  if (slash) *slash = 0;
-  snprintf(out, n, "%.*s/mark", (int)(n > 16 ? n - 8 : 8), cfg);
-}
+static void mark_path(char *out, size_t n) { av_config_file(out, n, "mark"); }
 
 static void mark_load(char *id, size_t n) {
   char p[512];
@@ -623,13 +776,7 @@ static void mark_save(const char *id) {
   fclose(f);
 }
 
-static void since_path(char *out, size_t n) {
-  char cfg[400];
-  av_config_path(cfg, sizeof(cfg));
-  char *slash = strrchr(cfg, '/');
-  if (slash) *slash = 0;
-  snprintf(out, n, "%.*s/since", (int)(n > 16 ? n - 8 : 8), cfg);
-}
+static void since_path(char *out, size_t n) { av_config_file(out, n, "since"); }
 
 static long since_load(void) {
   char p[512];
@@ -732,6 +879,26 @@ static size_t on_data(void *ptr, size_t sz, size_t nm, void *user) {
  * to leave immediately. It holds no state worth flushing. */
 static void on_stop(int s) { (void)s; _exit(0); }
 
+static long config_mtime(void) {
+  char p[512];
+  av_config_path(p, sizeof(p));
+  struct stat st;
+  if (stat(p, &st) != 0) return 0;
+  return (long)st.st_mtime;
+}
+
+/* A subscription is opened once and then held for as long as the relay will
+ * keep it, which is the whole point — but it also means the topic it was
+ * opened with is the topic it stays on. Re-pairing rewrites the config
+ * underneath a listener that will never look at it again. curl calls this
+ * roughly once a second; returning non-zero drops the connection so the loop
+ * can pick the new topic up. */
+static int on_progress(void *user, curl_off_t dt, curl_off_t dn,
+                       curl_off_t ut, curl_off_t un) {
+  (void)dt; (void)dn; (void)ut; (void)un;
+  return config_mtime() != *(long *)user;
+}
+
 int net_listen(void) {
   AvConfig cfg;
   if (!av_config_load(&cfg)) {
@@ -754,10 +921,29 @@ int net_listen(void) {
   L.last_time = since_load();
   mark_load(L.last_id, sizeof(L.last_id));
 
+  char on_topic[sizeof(cfg.topic)];
+  snprintf(on_topic, sizeof(on_topic), "%s", cfg.topic);
   fprintf(stderr, "[aviary] listening on %s/%s\n", NTFY_HOST, cfg.topic);
 
   int backoff = 1;
   for (;;) {
+    /* re-read it every pass: `aviary join` may have run since the last one */
+    if (!av_config_load(&cfg)) {
+      fprintf(stderr, "[aviary] no pairing any more — nothing to listen to\n");
+      sleep(5);
+      continue;
+    }
+    /* after the load, not before: loading is allowed to write the file back
+     * once, to mint this machine's id, and that must not read as a re-pairing */
+    long cfg_seen = config_mtime();
+    if (strcmp(cfg.topic, on_topic) != 0) {
+      snprintf(on_topic, sizeof(on_topic), "%s", cfg.topic);
+      L.last_id[0] = 0;                    /* the old id is another topic's */
+      L.last_time = since_load();
+      fprintf(stderr, "[aviary] re-paired — now listening on %s/%s\n",
+              NTFY_HOST, cfg.topic);
+    }
+
     /* Pick up anything sent while this machine was off, then stay connected.
      * ntfy holds recent messages, so a letter waits rather than being lost.
      * Resuming from the last message id is exact; resuming from a timestamp
@@ -782,12 +968,28 @@ int net_listen(void) {
     curl_easy_setopt(ch, CURLOPT_LOW_SPEED_LIMIT, 1L);
     curl_easy_setopt(ch, CURLOPT_LOW_SPEED_TIME, 120L);
     curl_easy_setopt(ch, CURLOPT_USERAGENT, "aviary/1");
+    curl_easy_setopt(ch, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(ch, CURLOPT_XFERINFOFUNCTION, on_progress);
+    curl_easy_setopt(ch, CURLOPT_XFERINFODATA, &cfg_seen);
 
     CURLcode rc = curl_easy_perform(ch);
+    long http = 0;
+    curl_easy_getinfo(ch, CURLINFO_RESPONSE_CODE, &http);
     curl_easy_cleanup(ch);
 
-    if (rc == CURLE_OK) backoff = 1;
-    else {
+    if (rc == CURLE_ABORTED_BY_CALLBACK) continue;   /* the config moved */
+
+    if (rc == CURLE_OK && http >= 200 && http < 300) backoff = 1;
+    else if (rc == CURLE_OK) {
+      /* a 4xx is not a network problem and reconnecting will not fix it, so
+       * say which one it was rather than retrying in silence */
+      fprintf(stderr, "[aviary] relay refused the subscription (HTTP %ld)\n", http);
+      if (http >= 400 && http < 500 && L.last_id[0]) {
+        fprintf(stderr, "[aviary] dropping the resume point and starting fresh\n");
+        L.last_id[0] = 0;
+        mark_save("");
+      }
+    } else {
       fprintf(stderr, "[aviary] relay dropped (%s), retrying in %ds\n",
               curl_easy_strerror(rc), backoff);
     }

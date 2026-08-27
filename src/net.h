@@ -24,6 +24,9 @@ int  av_config_load(AvConfig *c);
 int  av_config_save(const AvConfig *c);
 void av_config_path(char *out, size_t n);
 
+/* a file that sits next to the config: "mark", "since", "pid", "daemon.log" */
+void av_config_file(char *out, size_t n, const char *leaf);
+
 /* pair this machine with the other one */
 int  net_link(const char *topic, const char *pass, const char *name,
               const char *bird);
@@ -40,10 +43,18 @@ int  net_publish(const char *text, const char *from, const char *bird);
 /* block forever, waiting for letters, flying each one on the local screen */
 int  net_listen(void);
 
+/* everything about the pairing and the relay that `aviary status` reports */
+void net_status_print(void);
+
 /* the local daemon's socket, shared by every client path */
 void av_socket_path(char *out, size_t n);
 int  av_daemon_is_up(void);
+int  av_daemon_pid(void);
+int  av_daemon_stop(void);
+void av_daemon_claim(void);          /* the daemon records itself here */
+void av_daemon_release(void);
 int  av_ensure_daemon(void);
+int  av_daemon_bounce(void);         /* stop it if it is up, then start it */
 int  av_local_send(const char *text, const char *from, const char *bird,
                    int depart, double fx, double fy);
 

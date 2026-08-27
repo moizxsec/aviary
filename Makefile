@@ -3,7 +3,7 @@ SRCDIR  := src
 OBJDIR  := build
 
 CFLAGS  ?= -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE
-PKGS    := cairo x11 xext libcurl libcrypto
+PKGS    := cairo x11 xext xrandr libcurl libcrypto
 CFLAGS  += $(shell pkg-config --cflags $(PKGS))
 LDLIBS  := $(shell pkg-config --libs $(PKGS)) -lm
 
@@ -43,7 +43,7 @@ install: $(BIN)
 # run the daemon automatically for this user's graphical session
 service: install
 	@mkdir -p $(HOME)/.config/systemd/user
-	@printf '[Unit]\nDescription=Aviary\nAfter=graphical-session.target\nPartOf=graphical-session.target\n\n[Service]\nType=simple\nExecStart=$(PREFIX)/bin/$(BIN) daemon --pixel 2\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=graphical-session.target\n' > $(HOME)/.config/systemd/user/aviary.service
+	@printf '[Unit]\nDescription=Aviary\nAfter=graphical-session.target\nPartOf=graphical-session.target\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\nExecStart=$(PREFIX)/bin/$(BIN) daemon --pixel 2\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=graphical-session.target\n' > $(HOME)/.config/systemd/user/aviary.service
 	systemctl --user daemon-reload
 	systemctl --user enable --now aviary.service
 	@echo "aviary will now start with your session" 

@@ -13,8 +13,8 @@ cd aviary
 ./install.sh
 ```
 
-Pulls build dependencies, compiles, installs `aviary` to `~/.local/bin`, and
-registers autostart so the daemon comes back after a reboot. **Open a new shell
+Pulls build dependencies (cairo, X11, Xext, **Xrandr**, curl, OpenSSL),
+compiles, installs `aviary` to `~/.local/bin`, and registers autostart so the daemon comes back after a reboot. **Open a new shell
 afterwards** so `~/.local/bin` is on your `PATH`.
 
 By hand instead:
@@ -48,13 +48,49 @@ Starts the daemon itself if it is not already running. Nothing to set up.
 
 ### `aviary send "text"`
 
-Fly a bird on **your own screen only**. Nothing is sent to anyone. This is the
-one to use when you are trying things out.
+The same thing as `aviary`, in one line, without the prompt. Once you are
+paired it goes to the other laptop.
 
 ```bash
-aviary send "testing"
-aviary send "testing" --bird phoenix --from muez
+aviary send "on my way"
+aviary send "on my way" --bird phoenix --from muez
+aviary send --local "testing"      # fly it here only, send nothing
 ```
+
+`--local` is the one to use when you are trying things out. Before this,
+`send` was local-only always — a command called send that did not send, which
+is indistinguishable from one whose letters are being lost.
+
+---
+
+### `aviary status`
+
+What is running, what is paired, and what is wrong. Run this first when
+something is not working.
+
+```
+  daemon      running
+              pid 3412
+  paired      yes — as muez, usual bird owl
+  topic       av-df69e64cc1a2c56e039909b3
+  resume      from message kMg9n4lFsPGs
+  relay       reachable — 1 letter still held for this topic
+  display     :0 — root 3840x1200, 2 screens
+              eDP-1      1920x1200+0+0       (primary)
+              HDMI-1     1920x1080+1920+120
+  at login    autostart entry present
+              systemd unit enabled, running
+  log         ~/.config/aviary/daemon.log
+              ...the last few lines
+```
+
+Worth knowing how to read:
+
+- **daemon NOT running** — nothing can be delivered here, whatever the other
+  laptop does.
+- **relay ... N letters still held** during a silence means the letters are
+  arriving at the relay and the listener is the problem, not the sender.
+- **at login ... MISSING** is why it worked until the first reboot.
 
 ---
 
@@ -126,6 +162,7 @@ It starts itself when you send, and on login. You should not normally need any
 of this.
 
 ```bash
+aviary status              # what is running and what is wrong
 aviary restart             # bounce it
 aviary stop                # stop it
 aviary daemon              # run in the foreground — blocks this terminal
@@ -135,6 +172,27 @@ aviary listen              # watch the relay by hand, without the overlay
 
 `--pixel N` is device pixels per sprite pixel. `2` is the default. `1` is
 oneko's original one-to-one.
+
+It writes `~/.config/aviary/daemon.log`, because started from a login autostart
+entry there is nowhere else for it to say anything.
+
+At login it may come up before the X server does, so it waits up to a minute
+for one, and tries `:0` and `:1` if `DISPLAY` is not set at all.
+
+---
+
+## Two screens
+
+Both screens are one X screen as far as X is concerned: the root window is the
+two of them side by side. The overlay covers **one monitor**, picked per
+delivery — the one holding the terminal you typed in, or the one under the
+pointer for a letter arriving. Otherwise the letter lands in the middle of the
+root window, which on a dual-monitor desk is the seam between the two.
+
+Docking, unplugging and rotating need nothing done: the geometry is looked up
+fresh for every letter.
+
+`aviary status` lists the monitors it can see.
 
 ---
 
@@ -157,6 +215,8 @@ A phoenix letter does not fade when you let it go. It catches fire.
 | `~/.config/aviary/config` | topic, encryption key, your name, your bird. Mode `0600` |
 | `~/.config/aviary/mark` | id of the last letter received, so none repeat |
 | `~/.config/aviary/since` | fallback resume point, set when you pair |
+| `~/.config/aviary/pid` | the running daemon, so `stop` kills it and not you |
+| `~/.config/aviary/daemon.log` | what the daemon said, including at login |
 | `$XDG_RUNTIME_DIR/aviary.sock` | the local socket the daemon listens on |
 | `~/.config/autostart/aviary.desktop` | starts it on login |
 | `~/.config/systemd/user/aviary.service` | same, where there is a user session |
@@ -170,7 +230,9 @@ that is switched off waits for it and arrives the moment it boots. Longer than
 that and the relay drops it, silently.
 
 The resume point is the id of the last letter received, so nothing repeats
-across reboots and nothing is skipped.
+across reboots and nothing is skipped. Pairing clears it, because an id from
+the old topic means nothing in the new one — handed to the relay it is not an
+error, it simply brings back everything the topic is still holding.
 
 ---
 
@@ -207,7 +269,22 @@ make check                     # renders all four birds; fails if a beat is miss
 
 ## Troubleshooting
 
+**Start with `aviary status`.** It checks everything below in one go.
+
 **Nothing flies.** Is a daemon up? `aviary restart`. Check `DISPLAY` is set.
+
+**It stopped working after a reboot.** `aviary status` — look at the *at login*
+lines. If the autostart entry is missing, run `./install.sh` again. If it is
+there, `~/.config/aviary/daemon.log` says what happened when it tried.
+
+**The letter lands between two screens.** Fixed: the overlay now sits on one
+monitor. If it is on the wrong one, it follows the pointer for arriving
+letters — move the mouse to the screen you are looking at.
+
+**I can send but nothing comes back.** Almost always a daemon that was left
+running across a re-pairing, watching the topic it started with. It notices on
+its own now; `aviary restart` settles it either way. `aviary status` will show
+letters held at the relay that never arrived.
 
 **"no daemon on this machine, so nothing flew here"** — the letter *was* sent,
 it just did not draw locally. `aviary restart`.

@@ -12,6 +12,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 #include <X11/extensions/shape.h>
+#include <X11/extensions/Xrandr.h>
 #include <cairo/cairo-xlib.h>
 
 #include <errno.h>
@@ -81,8 +82,8 @@ static int server_listen(void) {
     struct sockaddr_un a;
     if (fill_sun(&a, path) == 0 && connect(probe, (struct sockaddr *)&a, sizeof(a)) == 0) {
       close(probe);
-      fprintf(stderr, "aviary is already running (%s)\n", path);
-      return -1;
+      fprintf(stderr, "[aviary] already running (%s)\n", path);
+      return -2;             /* not a failure: someone got here first */
     }
     close(probe);
   }
@@ -149,7 +150,9 @@ typedef struct {
   Window           root, win;
   Visual          *visual;
   Colormap         cmap;
-  int              w, h;              /* device pixels */
+  int              ox, oy;            /* where the window sits on the root */
+  int              w, h;              /* device pixels — one monitor, not all */
+  int              root_w, root_h;
   cairo_surface_t *xsurf;
   Pixelizer        px;                /* the scene lives here, at sprite scale */
   int              mapped;
@@ -157,15 +160,96 @@ typedef struct {
   int              in_x, in_y, in_w, in_h;   /* current input region */
 } Overlay;
 
-static int overlay_open(Overlay *o, int pixel_size) {
+typedef struct { int x, y, w, h; } Rect;
+
+/* A laptop with a second screen plugged in is still one X screen: the root
+ * window is the two of them side by side, with the desktops laid out inside
+ * it. A window covering that root spans both, and anything drawn at its centre
+ * lands exactly on the seam — half a letter on each screen, which is where
+ * hers was arriving. RandR is what knows where the seams are.
+ *
+ * Returns the monitor containing the point, or the primary one, or nothing at
+ * all if the server has no RandR — in which case the caller uses the root and
+ * behaves as it always did. */
+static int monitor_for_point(Display *dpy, Window root, int px, int py, Rect *out) {
+  int n = 0;
+  XRRMonitorInfo *m = XRRGetMonitors(dpy, root, True, &n);   /* active only */
+  if (!m || n <= 0) { if (m) XRRFreeMonitors(m); return 0; }
+
+  int best = -1;
+  if (px >= 0 && py >= 0)
+    for (int i = 0; i < n; i++)
+      if (px >= m[i].x && px < m[i].x + m[i].width &&
+          py >= m[i].y && py < m[i].y + m[i].height) { best = i; break; }
+  if (best < 0)
+    for (int i = 0; i < n; i++) if (m[i].primary) { best = i; break; }
+  if (best < 0) best = 0;
+
+  out->x = m[best].x;      out->y = m[best].y;
+  out->w = m[best].width;  out->h = m[best].height;
+  XRRFreeMonitors(m);
+  return out->w > 0 && out->h > 0;
+}
+
+/* The rectangle the bird should have to itself. Looked up fresh every time,
+ * which is also how a screen being plugged in, unplugged or rotated gets
+ * noticed — there is no event to miss if nothing is ever cached. */
+static void overlay_target_rect(Overlay *o, int px, int py, Rect *r) {
+  XWindowAttributes wa;
+  if (XGetWindowAttributes(o->dpy, o->root, &wa)) {
+    o->root_w = wa.width;
+    o->root_h = wa.height;
+  }
+  if (!monitor_for_point(o->dpy, o->root, px, py, r)) {
+    r->x = 0; r->y = 0; r->w = o->root_w; r->h = o->root_h;
+  }
+}
+
+/* At login the daemon can easily be up before the X server is, and a systemd
+ * user unit may have no DISPLAY in its environment at all. Neither is worth
+ * dying over — waiting costs nothing and the alternative is a service that
+ * fails five times in fifteen seconds and is never tried again. */
+static Display *open_display_waiting(int seconds) {
+  static const char *guesses[] = { ":0", ":1", NULL };
+  const char *want = getenv("DISPLAY");
+  int said = 0;
+
+  for (int i = 0; i < seconds * 2 + 1; i++) {
+    if (want && *want) {
+      Display *d = XOpenDisplay(want);
+      if (d) return d;
+    } else {
+      for (int j = 0; guesses[j]; j++) {
+        Display *d = XOpenDisplay(guesses[j]);
+        if (d) { setenv("DISPLAY", guesses[j], 1); return d; }
+      }
+    }
+    if (!said && seconds > 0) {
+      fprintf(stderr, "[aviary] no X server yet%s — waiting up to %ds\n",
+              (want && *want) ? "" : " (DISPLAY is not set)", seconds);
+      said = 1;
+    }
+    if (i < seconds * 2) usleep(500000);
+  }
+  return NULL;
+}
+
+static int overlay_open(Overlay *o, int pixel_size, int wait_secs) {
   memset(o, 0, sizeof(*o));
 
-  o->dpy = XOpenDisplay(NULL);
-  if (!o->dpy) { fprintf(stderr, "cannot open display (is DISPLAY set?)\n"); return -1; }
+  o->dpy = open_display_waiting(wait_secs);
+  if (!o->dpy) {
+    fprintf(stderr, "cannot open display (is DISPLAY set? is X running?)\n");
+    return -1;
+  }
   o->screen = DefaultScreen(o->dpy);
   o->root   = RootWindow(o->dpy, o->screen);
-  o->w = DisplayWidth(o->dpy, o->screen);
-  o->h = DisplayHeight(o->dpy, o->screen);
+  o->root_w = DisplayWidth(o->dpy, o->screen);
+  o->root_h = DisplayHeight(o->dpy, o->screen);
+
+  Rect r;
+  overlay_target_rect(o, -1, -1, &r);        /* the primary one, to begin with */
+  o->ox = r.x; o->oy = r.y; o->w = r.w; o->h = r.h;
 
   /* a 32-bit visual is what makes real per-pixel alpha possible; without a
    * compositor running, the desktop simply will not blend it */
@@ -185,7 +269,8 @@ static int overlay_open(Overlay *o, int pixel_size) {
   at.override_redirect = True;      /* same trick oneko uses: bypass the WM */
   at.event_mask = ExposureMask | ButtonPressMask | StructureNotifyMask;
 
-  o->win = XCreateWindow(o->dpy, o->root, 0, 0, (unsigned)o->w, (unsigned)o->h, 0,
+  o->win = XCreateWindow(o->dpy, o->root, o->ox, o->oy,
+                         (unsigned)o->w, (unsigned)o->h, 0,
                          32, InputOutput, o->visual,
                          CWColormap | CWBackPixel | CWBorderPixel |
                          CWOverrideRedirect | CWEventMask, &at);
@@ -214,8 +299,10 @@ static int overlay_open(Overlay *o, int pixel_size) {
   o->xsurf = cairo_xlib_surface_create(o->dpy, o->win, o->visual, o->w, o->h);
   av_set_pixel_mode(1);
   pixel_init(&o->px, o->w, o->h, pixel_size);
-  fprintf(stderr, "[aviary] %dx%d screen, %d device px per sprite pixel (%dx%d scene)\n",
-          o->w, o->h, o->px.size, o->px.bw, o->px.bh);
+  fprintf(stderr, "[aviary] %dx%d screen at +%d+%d (root is %dx%d), "
+                  "%d device px per sprite pixel (%dx%d scene)\n",
+          o->w, o->h, o->ox, o->oy, o->root_w, o->root_h,
+          o->px.size, o->px.bw, o->px.bh);
   return 0;
 }
 
@@ -238,65 +325,65 @@ static void overlay_input_region(Overlay *o, int x, int y, int w, int h) {
   }
 }
 
-/* Turn "0.62 across, 0.78 down the terminal window" into a point on the root
- * window. The terminal still holds the input focus at this moment, because the
- * overlay is override-redirect and never takes it. */
-static void overlay_resolve_origin(Overlay *o, double fx, double fy,
-                                   double *ax, double *ay) {
-  *ax = o->w * 0.5;
-  *ay = o->h * 0.75;
-  if (fx < 0 || fy < 0) return;
+/* Where on the root window is this delivery actually happening?
+ *
+ * For a letter being sent, that is the spot just past what was typed — the
+ * terminal still holds the input focus at this moment, because the overlay is
+ * override-redirect and never takes it. For one arriving there is no such
+ * hint, and the pointer is the best guess at which screen is being looked at.
+ *
+ * Returns 1 if the point is a real launch spot, 0 if it is only good enough to
+ * choose a monitor with. Either way the coordinates are root coordinates. */
+static int delivery_anchor(Overlay *o, double fx, double fy, int *ax, int *ay) {
+  *ax = -1; *ay = -1;
 
-  Window focus = None;
-  int revert = 0;
-  XGetInputFocus(o->dpy, &focus, &revert);
-  if (focus == None || focus == PointerRoot || focus == o->root) {
-    /* no usable focus: fall back to wherever the pointer is */
-    Window r, c;
-    int rx, ry, wx, wy;
-    unsigned mask;
-    if (XQueryPointer(o->dpy, o->root, &r, &c, &rx, &ry, &wx, &wy, &mask)) {
-      *ax = rx;
-      *ay = ry;
+  if (fx >= 0 && fy >= 0) {
+    Window focus = None;
+    int revert = 0;
+    XGetInputFocus(o->dpy, &focus, &revert);
+    if (focus != None && focus != PointerRoot && focus != o->root) {
+      XWindowAttributes wa;
+      Window child;
+      int rx = 0, ry = 0;
+      if (XGetWindowAttributes(o->dpy, focus, &wa) &&
+          wa.width >= 8 && wa.height >= 8 &&
+          XTranslateCoordinates(o->dpy, focus, o->root, 0, 0, &rx, &ry, &child)) {
+        *ax = rx + (int)(fx * wa.width);
+        *ay = ry + (int)(fy * wa.height);
+        return 1;
+      }
     }
-    return;
   }
 
-  XWindowAttributes wa;
-  if (!XGetWindowAttributes(o->dpy, focus, &wa) || wa.width < 8 || wa.height < 8)
-    return;
-
-  int rx = 0, ry = 0;
-  Window child;
-  if (!XTranslateCoordinates(o->dpy, focus, o->root, 0, 0, &rx, &ry, &child))
-    return;
-
-  *ax = rx + fx * wa.width;
-  *ay = ry + fy * wa.height;
+  Window r, c;
+  int rx, ry, wx, wy;
+  unsigned mask;
+  if (XQueryPointer(o->dpy, o->root, &r, &c, &rx, &ry, &wx, &wy, &mask)) {
+    *ax = rx;
+    *ay = ry;
+  }
+  return 0;
 }
 
-/* A laptop gets docked, unplugged, rotated. The overlay is created at one size
- * and would otherwise keep drawing at that size forever — half a screen, or off
- * the edge of it. Check before every delivery and rebuild if the root window
- * has changed underneath us. */
-static int overlay_sync_size(Overlay *o) {
-  XWindowAttributes wa;
-  if (!XGetWindowAttributes(o->dpy, o->root, &wa)) return 0;
-  if (wa.width == o->w && wa.height == o->h) return 0;
+/* Move the overlay onto the screen this delivery belongs to. Checked before
+ * every delivery, so a laptop that gets docked, unplugged or rotated between
+ * two letters is simply right the second time without anyone noticing. */
+static void overlay_place(Overlay *o, int px, int py) {
+  Rect r;
+  overlay_target_rect(o, px, py, &r);
+  if (r.x == o->ox && r.y == o->oy && r.w == o->w && r.h == o->h) return;
 
-  fprintf(stderr, "[aviary] screen is now %dx%d (was %dx%d) — rebuilding\n",
-          wa.width, wa.height, o->w, o->h);
-  o->w = wa.width;
-  o->h = wa.height;
+  fprintf(stderr, "[aviary] flying on the %dx%d screen at +%d+%d\n",
+          r.w, r.h, r.x, r.y);
+  o->ox = r.x; o->oy = r.y; o->w = r.w; o->h = r.h;
 
-  XMoveResizeWindow(o->dpy, o->win, 0, 0, (unsigned)o->w, (unsigned)o->h);
+  XMoveResizeWindow(o->dpy, o->win, o->ox, o->oy, (unsigned)o->w, (unsigned)o->h);
   XFlush(o->dpy);
   cairo_xlib_surface_set_size(o->xsurf, o->w, o->h);
 
   int size = o->px.size;
   pixel_free(&o->px);
   pixel_init(&o->px, o->w, o->h, size);
-  return 1;
 }
 
 static void overlay_show(Overlay *o) {
@@ -409,12 +496,52 @@ static int read_delivery(int fd, Delivery *d) {
   return l > 0;
 }
 
+/* Started from a desktop autostart entry there is nowhere for stderr to go, so
+ * a daemon that fails at login fails silently and there is nothing at all to
+ * look at afterwards. Keep a log beside the config instead. */
+static void daemon_log_open(void) {
+  if (isatty(STDERR_FILENO)) return;
+
+  char p[512];
+  av_config_file(p, sizeof(p), "daemon.log");
+  int fd = open(p, O_WRONLY | O_CREAT | O_APPEND, 0600);
+  if (fd < 0) return;
+
+  struct stat st;
+  if (fstat(fd, &st) == 0 && st.st_size > 256 * 1024) {   /* do not grow forever */
+    if (ftruncate(fd, 0) == 0) lseek(fd, 0, SEEK_SET);
+  }
+  dup2(fd, STDOUT_FILENO);
+  dup2(fd, STDERR_FILENO);
+  if (fd > 2) close(fd);
+  setvbuf(stderr, NULL, _IOLBF, 0);
+
+  time_t t = time(NULL);
+  char when[64];
+  struct tm tmv;
+  if (localtime_r(&t, &tmv) && strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", &tmv))
+    fprintf(stderr, "\n[aviary] --- started %s ---\n", when);
+}
+
 static int daemon_main(int pixel_size) {
+  daemon_log_open();
+
+  if (av_daemon_is_up()) {
+    fprintf(stderr, "[aviary] already running — leaving it to it\n");
+    return 0;
+  }
+
+  /* An autostart entry and a systemd unit may both fire at login; whichever
+   * loses the race must not look like a crash, or the unit gets restarted five
+   * times and then given up on for good. */
   Overlay o;
-  if (overlay_open(&o, pixel_size) != 0) return 1;
+  int wait = isatty(STDERR_FILENO) ? 2 : 60;
+  if (overlay_open(&o, pixel_size, wait) != 0) return 1;
 
   int lfd = server_listen();
+  if (lfd == -2) { overlay_close(&o); return 0; }
   if (lfd < 0) { overlay_close(&o); return 1; }
+  av_daemon_claim();
 
   /* glibc's signal() installs handlers with SA_RESTART, so select() would be
    * restarted after a SIGTERM instead of returning EINTR — the loop never got
@@ -514,13 +641,20 @@ static int daemon_main(int pixel_size) {
       memmove(&queue[0], &queue[1], sizeof(Delivery) * (size_t)(qn - 1));
       qn--;
       if (scene.p.a) scene_free(&scene);
-      overlay_sync_size(&o);
+
+      /* the point first, then the screen it falls on, then the scene */
+      int ax = -1, ay = -1;
+      int have_spot = delivery_anchor(&o, d.fx, d.fy, &ax, &ay);
+      overlay_place(&o, ax, ay);
+
       if (d.mode == SM_DEPART) {
-        double ax, ay;
-        overlay_resolve_origin(&o, d.fx, d.fy, &ax, &ay);
+        double lx = o.px.bw * 0.5, ly = o.px.bh * 0.75;
+        if (have_spot) {
+          lx = (ax - o.ox) / (double)o.px.size;
+          ly = (ay - o.oy) / (double)o.px.size;
+        }
         scene_start_ex(&scene, o.px.bw, o.px.bh, d.text, d.from,
-                       scene_species_from_name(d.bird), SM_DEPART,
-                       ax / o.px.size, ay / o.px.size);
+                       scene_species_from_name(d.bird), SM_DEPART, lx, ly);
       } else {
         scene_start(&scene, o.px.bw, o.px.bh, d.text, d.from,
                     scene_species_from_name(d.bird));
@@ -606,6 +740,7 @@ static int daemon_main(int pixel_size) {
   overlay_hide(&o);
   overlay_close(&o);
   close(lfd);
+  av_daemon_release();
   char path[256];
   socket_path(path, sizeof(path));
   unlink(path);
@@ -679,6 +814,107 @@ static int compose_main(int argc, char **argv) {
   return sent || local_only ? 0 : 1;
 }
 
+/* When it does not work, this is the thing to run. Everything that has to be
+ * true for a letter to arrive, checked and printed in one screen. */
+static void status_screens(void) {
+  Display *dpy = open_display_waiting(0);
+  if (!dpy) {
+    const char *d = getenv("DISPLAY");
+    printf("  display     cannot open %s — no bird can fly here\n",
+           (d && *d) ? d : "(DISPLAY is not set)");
+    return;
+  }
+
+  Window root = RootWindow(dpy, DefaultScreen(dpy));
+  int n = 0;
+  XRRMonitorInfo *m = XRRGetMonitors(dpy, root, True, &n);
+  const char *dname = getenv("DISPLAY");
+  printf("  display     %s — root %dx%d, %d screen%s\n",
+         (dname && *dname) ? dname : "(unset)",
+         DisplayWidth(dpy, DefaultScreen(dpy)),
+         DisplayHeight(dpy, DefaultScreen(dpy)),
+         n > 0 ? n : 1, n == 1 ? "" : "s");
+
+  if (m && n > 0) {
+    for (int i = 0; i < n; i++) {
+      char *nm = XGetAtomName(dpy, m[i].name);
+      printf("              %-10s %dx%d+%d+%d%s\n",
+             nm ? nm : "?", m[i].width, m[i].height, m[i].x, m[i].y,
+             m[i].primary ? "  (primary)" : "");
+      if (nm) XFree(nm);
+    }
+  } else {
+    printf("              no RandR — the whole root is used as one screen\n");
+  }
+  if (m) XRRFreeMonitors(m);
+
+  XVisualInfo vi;
+  if (!XMatchVisualInfo(dpy, DefaultScreen(dpy), 32, TrueColor, &vi))
+    printf("  compositor  missing a 32-bit visual — the overlay cannot blend\n");
+
+  if (getenv("WAYLAND_DISPLAY"))
+    printf("  session     Wayland (through XWayland) — the overlay may sit\n"
+           "              behind native windows\n");
+
+  XCloseDisplay(dpy);
+}
+
+static void status_login(void) {
+  char p[512];
+  const char *home = getenv("HOME");
+  struct stat st;
+
+  snprintf(p, sizeof(p), "%s/.config/autostart/aviary.desktop", home ? home : "");
+  printf("  at login    autostart entry %s\n",
+         stat(p, &st) == 0 ? "present" : "MISSING — run ./install.sh again");
+
+  snprintf(p, sizeof(p), "%s/.config/systemd/user/aviary.service", home ? home : "");
+  if (stat(p, &st) != 0) {
+    printf("              no systemd unit (the autostart entry covers it)\n");
+    return;
+  }
+  int enabled = system("systemctl --user is-enabled aviary.service >/dev/null 2>&1") == 0;
+  int active  = system("systemctl --user is-active  aviary.service >/dev/null 2>&1") == 0;
+  printf("              systemd unit %s, %s\n",
+         enabled ? "enabled" : "NOT enabled",
+         active ? "running" : "not running");
+}
+
+static void status_log(void) {
+  char p[512];
+  av_config_file(p, sizeof(p), "daemon.log");
+  struct stat st;
+  if (stat(p, &st) != 0) { printf("  log         none yet (%s)\n", p); return; }
+  printf("  log         %s\n", p);
+
+  char cmd[600];
+  snprintf(cmd, sizeof(cmd), "tail -n 6 '%s' 2>/dev/null | sed 's/^/              /'", p);
+  fflush(stdout);              /* or tail's output lands ahead of ours */
+  if (system(cmd) != 0) { /* nothing to do */ }
+}
+
+static int status_main(void) {
+  printf("\n  aviary\n\n");
+
+  int pid = av_daemon_pid();
+  if (av_daemon_is_up())
+    printf("  daemon      running%s\n", pid ? "" : " (started before pids were kept)");
+  else
+    printf("  daemon      NOT running — nothing can be delivered here\n");
+  if (pid) printf("              pid %d\n", pid);
+
+  char sock[256];
+  av_socket_path(sock, sizeof(sock));
+  printf("  socket      %s\n", sock);
+
+  net_status_print();
+  status_screens();
+  status_login();
+  status_log();
+  printf("\n");
+  return 0;
+}
+
 static void usage(void) {
   fprintf(stderr,
     "aviary — tiny birds that carry letters across your desktop\n"
@@ -694,7 +930,9 @@ static void usage(void) {
     "\n"
     "now and then\n"
     "  aviary --bird owl         send with a different bird this once\n"
-    "  aviary send \"text\"        fly one on your own screen, nothing sent\n"
+    "  aviary send \"text\"        send in one line, without the prompt\n"
+    "      --local               fly it on your own screen only\n"
+    "  aviary status             what is running, what is paired, what is wrong\n"
     "  aviary restart            bounce the overlay (it starts itself anyway)\n"
     "  aviary stop               stop the overlay\n"
     "  aviary daemon [--pixel N] run it in the foreground; blocks this terminal\n"
@@ -708,21 +946,40 @@ static void usage(void) {
 }
 
 int main(int argc, char **argv) {
+  /* `send` used to fly a bird on this screen and go no further, which is a
+   * trap with a name on it: the word means what it means, and a letter that
+   * quietly never left is indistinguishable from one that arrived. It goes to
+   * the other laptop too now, unless --local says otherwise. */
   if (argc >= 2 && !strcmp(argv[1], "send")) {
-    const char *from = "";
-    const char *bird = "phoenix";
+    AvConfig cfg;
+    int linked = av_config_load(&cfg);
+    const char *from = linked && cfg.name[0] ? cfg.name : "";
+    const char *bird = linked && cfg.bird[0] ? cfg.bird : "phoenix";
+    int local_only = 0;
     char text[LETTER_MAX_TEXT] = {0};
     size_t tl = 0;
     for (int i = 2; i < argc; i++) {
       if (!strcmp(argv[i], "--from") && i + 1 < argc) { from = argv[++i]; continue; }
       if (!strcmp(argv[i], "--bird") && i + 1 < argc) { bird = argv[++i]; continue; }
+      if (!strcmp(argv[i], "--local")) { local_only = 1; continue; }
       int n = snprintf(text + tl, sizeof(text) - tl, "%s%s", tl ? " " : "", argv[i]);
       if (n > 0) tl += (size_t)n;
       if (tl >= sizeof(text) - 1) break;
     }
     if (!tl) { fprintf(stderr, "aviary send: nothing to say\n"); return 1; }
-    return client_send(text, from, bird, 0, -1, -1);
+
+    if (!local_only && linked) av_ensure_daemon();
+    int flew = client_send(text, from, bird, 0, -1, -1) == 0;
+    if (local_only || !linked) {
+      if (!linked && !local_only)
+        printf("  not paired, so this stayed here. `aviary invite` sets that up.\n");
+      return flew ? 0 : 1;
+    }
+    int sent = net_publish(text, from, bird) == 0;
+    if (sent && !flew) printf("  delivered, but no bird flew here.\n");
+    return sent ? 0 : 1;
   }
+  if (argc >= 2 && !strcmp(argv[1], "status")) return status_main();
   if (argc >= 2 && !strcmp(argv[1], "invite")) {
     const char *name = "", *bird = "pigeon";
     for (int i = 2; i < argc; i++) {
@@ -756,18 +1013,15 @@ int main(int argc, char **argv) {
     return net_link(topic, pass, name, bird);
   }
   if (argc >= 2 && !strcmp(argv[1], "listen")) return net_listen();
-  if (argc >= 2 && (!strcmp(argv[1], "restart") || !strcmp(argv[1], "stop"))) {
-    int was = av_daemon_is_up();
-    if (was) {
-      if (system("pkill -x -u \"$(id -u)\" aviary >/dev/null 2>&1") != 0) { /* nothing to do */ }
-      for (int i = 0; i < 40 && av_daemon_is_up(); i++) usleep(50000);
-    }
-    if (!strcmp(argv[1], "stop")) {
-      printf(was ? "  stopped.\n" : "  it was not running.\n");
-      return 0;
-    }
-    return av_ensure_daemon() ? (printf("  daemon running.\n"), 0)
-                           : (fprintf(stderr, "  could not start it\n"), 1);
+  if (argc >= 2 && !strcmp(argv[1], "stop")) {
+    /* systemd would only start it straight back up again */
+    if (system("systemctl --user stop aviary.service >/dev/null 2>&1") != 0) { /* fine */ }
+    printf(av_daemon_stop() ? "  stopped.\n" : "  it was not running.\n");
+    return 0;
+  }
+  if (argc >= 2 && !strcmp(argv[1], "restart")) {
+    return av_daemon_bounce() ? (printf("  daemon running.\n"), 0)
+                              : (fprintf(stderr, "  could not start it\n"), 1);
   }
   if (argc >= 2 && (!strcmp(argv[1], "compose") || !strcmp(argv[1], "write")))
     return compose_main(argc - 1, argv + 1);

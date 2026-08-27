@@ -232,23 +232,27 @@ void scene_start_ex(Scene *s, int sw, int sh, const char *text, const char *from
 
 void scene_free(Scene *s) { particles_free(&s->p); }
 
+/* Where on the bird the tied letter actually hangs. The same point whether it
+ * is being let go of or picked up. */
+static Vec bird_letter_point(Scene *s) {
+  switch (s->species) {
+    case BIRD_SWALLOW: return swallow_letter_point(&s->swallow);
+    case BIRD_OWL:     return owl_letter_point(&s->owl);
+    case BIRD_PIGEON:  return pigeon_capsule_point(&s->pigeon);
+    default:           return phoenix_release_point(&s->phoenix);
+  }
+}
+
 static void release_scroll(Scene *s) {
   double W = av_world();
-  Vec p;
+  Vec p = bird_letter_point(s);
   Flyer *f = scene_flyer(s);
 
-  if (s->species == BIRD_SWALLOW) {
-    p = swallow_letter_point(&s->swallow);
-    s->swallow.carrying = 0;
-  } else if (s->species == BIRD_OWL) {
-    p = owl_letter_point(&s->owl);
-    s->owl.carrying = 0;
-  } else if (s->species == BIRD_PIGEON) {
-    p = pigeon_capsule_point(&s->pigeon);
-    s->pigeon.carrying = 0;
-  } else {
-    p = phoenix_release_point(&s->phoenix);
-    s->phoenix.carrying = 0;
+  switch (s->species) {
+    case BIRD_SWALLOW: s->swallow.carrying = 0; break;
+    case BIRD_OWL:     s->owl.carrying     = 0; break;
+    case BIRD_PIGEON:  s->pigeon.carrying  = 0; break;
+    default:           s->phoenix.carrying = 0; break;
   }
 
   s->scroll.alive = 1;
@@ -851,16 +855,33 @@ static void update_depart(Scene *s, double dt) {
       break;
     }
 
-    case S_PICKUP:
+    case S_PICKUP: {
       if (!bird_can_land(s)) {
+        /* It used to be pushed around on a pair of sines here, which read as a
+         * bird hovering — and drifting off the letter while it did it. Hold
+         * over the spot instead; the wingbeat is what sells the hover. */
         f->hover = 1;
-        flyer_force(f, sin(f->t * 1.6) * 90 * W, (cos(f->t * 2.3) * 70 - 40) * W);
+        f->wander_gain = 18 * W;
+        double hold_y = s->origin.y - 24 * W;
+        flyer_force(f, (s->origin.x - f->x) * 3.4,
+                       (hold_y - (f->y + f->bob)) * 3.4);
       }
       bird_set_dip(s, av_clamp(s->clock / 0.9, 0.001, 1.0));
-      /* it takes the letter and ties it on */
-      if (s->scroll.alive && s->clock > 0.55) {
-        s->scroll.alive = 0;
-        bird_set_carrying(s, 1);
+
+      /* Reaching down for it takes as long as it takes; the letter should be
+       * in the bird's hand at the end of that, not vanish off the ground and
+       * reappear tied on. It comes up to meet the leg. */
+      if (s->scroll.alive) {
+        Vec tie = bird_letter_point(s);
+        double k = av_clamp(s->clock / 0.55, 0, 1);
+        double e = av_ease_out_cubic(k);
+        s->scroll.x = av_lerp(s->origin.x, tie.x, e);
+        s->scroll.y = av_lerp(s->origin.y, tie.y, e);
+        s->scroll.rot = av_lerp(s->scroll.rot, 0, fmin(1.0, dt * 6));
+        if (k >= 1) {
+          s->scroll.alive = 0;
+          bird_set_carrying(s, 1);
+        }
       }
       if (s->clock > 1.35) {
         bird_set_dip(s, 0);
@@ -868,6 +889,7 @@ static void update_depart(Scene *s, double dt) {
         s->clock = 0;
       }
       break;
+    }
 
     case S_TAKEOFF:
       if (bird_can_land(s) && bird_grounded(s)) {

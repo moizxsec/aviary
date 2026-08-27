@@ -48,18 +48,23 @@ Starts the daemon itself if it is not already running. Nothing to set up.
 
 ### `aviary send "text"`
 
-The same thing as `aviary`, in one line, without the prompt. Once you are
-paired it goes to the other laptop.
+The same thing as `aviary`, in one line, without the prompt. The bird comes to
+the cursor for it, the same way. Once you are paired it goes to the other
+laptop.
 
 ```bash
 aviary send "on my way"
 aviary send "on my way" --bird phoenix --from muez
-aviary send --local "testing"      # fly it here only, send nothing
+aviary send --local "testing"      # send nothing; show what she would see
 ```
 
-`--local` is the one to use when you are trying things out. Before this,
-`send` was local-only always — a command called send that did not send, which
-is indistinguishable from one whose letters are being lost.
+`--local` sends nothing and flies the **arriving** bird here instead — letter,
+pill and all. It is the half of this you never see from the sending end, and
+the one to use when you are trying things out.
+
+Before this, `send` was local-only always: a command called send that did not
+send, which from the terminal is indistinguishable from one whose letters are
+being lost.
 
 ---
 
@@ -181,6 +186,41 @@ for one, and tries `:0` and `:1` if `DISPLAY` is not set at all.
 
 ---
 
+## One bird, two desks
+
+Sending is not two animations at once. It is one bird, seen twice.
+
+Press enter and the bird comes down to **the line you typed on** — the letter
+rolls itself up there, on the cursor, not in the middle of the screen. It ties
+it on, and carries it off the edge.
+
+Only then does anything happen on the other laptop. The letter goes to the
+relay straight away, but it is stamped with how long this bird is still on
+this screen, and the far end holds it until that time is up. Two birds moving
+at the same moment on two desks reads as a copy of a bird; one leaving and
+then the other arriving reads as the same one.
+
+The wait is the sending bird's own flight — 9s for a phoenix, about 11s for an
+owl — plus `travel`, which is the gap across the room and is yours to set:
+
+```
+# ~/.config/aviary/config
+travel=2.5
+```
+
+`0` makes it arrive the moment the other bird is out of frame. Anything up to
+two minutes is allowed. `aviary status` prints the current value.
+
+Time the relay spent carrying the letter counts towards the wait, so a slow
+network shortens the hold rather than adding to it. If the two clocks disagree
+badly the whole wait is used instead, which is late rather than wrong.
+
+The one thing this cannot do is start the clock from her side. If her laptop
+is asleep the letter waits at the relay, and her bird flies in when she comes
+back — as it should.
+
+---
+
 ## Two screens
 
 Both screens are one X screen as far as X is concerned: the root window is the
@@ -212,7 +252,7 @@ A phoenix letter does not fade when you let it go. It catches fire.
 
 | path | what |
 |---|---|
-| `~/.config/aviary/config` | topic, encryption key, your name, your bird. Mode `0600` |
+| `~/.config/aviary/config` | topic, encryption key, your name, your bird, `travel`. Mode `0600` |
 | `~/.config/aviary/mark` | id of the last letter received, so none repeat |
 | `~/.config/aviary/since` | fallback resume point, set when you pair |
 | `~/.config/aviary/pid` | the running daemon, so `stop` kills it and not you |
@@ -281,6 +321,15 @@ there, `~/.config/aviary/daemon.log` says what happened when it tried.
 monitor. If it is on the wrong one, it follows the pointer for arriving
 letters — move the mouse to the screen you are looking at.
 
+**The bird collects from the middle, not from my cursor.** The terminal is
+asked where its cursor is and has 200ms to answer; a few do not. The daemon
+log says which happened. `tmux` and `screen` answer for the pane, not the
+window, so the spot is off by however the panes are arranged.
+
+**Her bird arrives too soon, or too late.** `travel=` in the config, in
+seconds. It is added to the sending bird's own flight time, not used instead
+of it.
+
 **I can send but nothing comes back.** Almost always a daemon that was left
 running across a re-pairing, watching the topic it started with. It notices on
 its own now; `aviary restart` settles it either way. `aviary status` will show
@@ -291,6 +340,15 @@ it just did not draw locally. `aviary restart`.
 
 **"a letter arrived that this passphrase cannot open"** — the two laptops are
 on different codes. Run `aviary invite` again and re-join.
+
+**"let it go" does not respond.** Fixed, in three places: the pill's clickable
+rectangle was recorded where the panel would settle rather than where it was
+being drawn while it opened, so for the third of a second after it appeared
+the click landed a few pixels off; the overlay's idea of the clickable area
+and the letter's disagreed about the padding; and the overlay never applied
+its empty click-through region until the first letter opened, so until then it
+quietly ate every click on that screen. `aviary status` shows the log, which
+now records the pill's rectangle and each letter let go.
 
 **Letters stopped arriving.** `aviary listen` in a terminal shows the relay
 directly, without the overlay in the way.

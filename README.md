@@ -58,7 +58,9 @@ In another shell:
 ./aviary send --local "..." --bird phoenix
 ```
 
-Without `--local`, `send` goes to the other laptop as well as flying here.
+`--local` sends nothing and flies the bird that would have arrived, letter and
+all. Without it, `send` is a real one: a bird comes to your cursor for the
+letter and carries it off, and the same letter goes to the other laptop.
 
 `make install` puts it in `/usr/local/bin`.
 
@@ -274,6 +276,21 @@ the message. Self-hosting ntfy raises that limit to whatever you like.
 
 `~/.config/aviary/config` holds the key and is written mode 0600.
 
+## One bird, seen twice
+
+The bird comes down to the line you typed on — the letter rolls itself up on
+the cursor, it ties it on, and carries it off the edge of your screen. Nothing
+happens on the other laptop until it has gone.
+
+The letter reaches the relay immediately, stamped with how long the sending
+bird is still on the sending screen. The far end holds it that long before
+flying its own bird in, less whatever the network already spent getting there.
+Two birds moving at once on two desks reads as a copy of a bird; one leaving
+and then the other arriving reads as the same one.
+
+`travel=` in `~/.config/aviary/config` is the gap across the room, in seconds,
+on top of that. It defaults to 2.5.
+
 ## The letters
 
 Each bird hands over a different object, in the state that bird left it in.
@@ -351,7 +368,9 @@ so `make check` is a real test.
   way, because the geometry is looked up fresh every time and never cached.
 - The overlay covers that screen with an **empty XShape input region**, so every
   click falls through to whatever is underneath. The letter is the one
-  rectangle that catches them.
+  rectangle that catches them — and that rectangle is put through the same
+  transform the pill is drawn with, so it is where the pill is even while the
+  panel is still opening.
 - The trigger socket is a unix socket in `$XDG_RUNTIME_DIR`, mode 0600. Nothing
   is exposed to the network.
 

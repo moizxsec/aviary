@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <math.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,8 +46,8 @@ int owl_sheet_main(int argc, char **argv);     /* render.c */
 /* --------------------------------------------------------------- socket -- */
 
 static int client_send(const char *text, const char *from, const char *bird,
-                       int depart, double fx, double fy) {
-  int rc = av_local_send(text, from, bird, depart, fx, fy);
+                       int depart, double fx, double fy, double delay) {
+  int rc = av_local_send(text, from, bird, depart, fx, fy, delay);
   if (rc == 2) {
     char path[256];
     av_socket_path(path, sizeof(path));
@@ -142,6 +143,43 @@ static int term_cells(int *rows, int *cols) {
   return 1;
 }
 
+/* The cursor sits in a character cell; the daemon wants a fraction of the
+ * terminal window. `extra` is how many columns further along the line the
+ * letter should be — the length of what was typed, when it was typed here. */
+static void spot_from_cell(int row, int col, int rows, int cols, double extra,
+                           double *fx, double *fy) {
+  double end_col = col + extra;
+  while (end_col > cols) end_col -= cols;              /* it wrapped */
+  *fx = (end_col - 0.5) / cols;
+  *fy = (row + 0.5) / rows;
+  if (*fy > 0.995) *fy = 0.995;
+}
+
+/* Where the shell has left the cursor, as a fraction of the terminal. */
+static int terminal_spot(double extra, double *fx, double *fy) {
+  int rows = 0, cols = 0, row = 0, col = 0;
+  if (!term_cells(&rows, &cols) || !query_cursor(&row, &col)) return 0;
+  spot_from_cell(row, col, rows, cols, extra, fx, fy);
+  return 1;
+}
+
+/* How long the bird is still on this screen after the line is typed: it flies
+ * in, collects the letter and carries it off the edge. Measured from the
+ * render harness, which runs the same scene the desktop does:
+ *
+ *     aviary render DIR 2 <bird> depart
+ *
+ * If those timings are ever retuned, re-run it and put the numbers back here —
+ * they are what the other laptop waits out before flying its own bird in. */
+static double depart_seconds(int species) {
+  switch (species) {
+    case BIRD_PIGEON:  return 10.0;
+    case BIRD_OWL:     return 11.1;
+    case BIRD_SWALLOW: return 10.5;
+    default:           return  8.8;      /* phoenix */
+  }
+}
+
 /* -------------------------------------------------------------- overlay -- */
 
 typedef struct {
@@ -234,6 +272,8 @@ static Display *open_display_waiting(int seconds) {
   return NULL;
 }
 
+static void overlay_input_region(Overlay *o, int x, int y, int w, int h);
+
 static int overlay_open(Overlay *o, int pixel_size, int wait_secs) {
   memset(o, 0, sizeof(*o));
 
@@ -295,6 +335,15 @@ static int overlay_open(Overlay *o, int pixel_size, int wait_secs) {
   o->have_shape = XShapeQueryExtension(o->dpy, &base, &err);
   if (!o->have_shape)
     fprintf(stderr, "[aviary] no XShape: the overlay will swallow clicks\n");
+
+  /* A window with no input shape set catches everything inside its bounds, and
+   * this one is the size of a monitor. The cached rectangle starts at all
+   * zeroes, so the first request for an empty region matched it and was
+   * skipped — and the empty region was never actually applied. Every click
+   * during a delivery went into the overlay and nowhere else. Start the cache
+   * at something no rectangle can be, and set the region now. */
+  o->in_x = o->in_y = o->in_w = o->in_h = -1;
+  overlay_input_region(o, 0, 0, 0, 0);
 
   o->xsurf = cairo_xlib_surface_create(o->dpy, o->win, o->visual, o->w, o->h);
   av_set_pixel_mode(1);
@@ -439,6 +488,8 @@ typedef struct {
   char   bird[24];
   int    mode;          /* SM_DELIVER or SM_DEPART */
   double fx, fy;        /* where in the focused window to start; <0 unknown */
+  double delay;         /* seconds still to fly before it gets here */
+  double due;           /* monotonic clock, once it is in the queue */
 } Delivery;
 
 static int read_delivery(int fd, Delivery *d) {
@@ -454,16 +505,17 @@ static int read_delivery(int fd, Delivery *d) {
   if (!nl) return 0;
   *nl = 0;
 
-  /* "from TAB bird TAB mode TAB fx TAB fy" — every field after the first is
-   * optional, so older senders still work */
+  /* "from TAB bird TAB mode TAB fx TAB fy TAB delay" — every field after the
+   * first is optional, so older senders still work */
   d->fx = d->fy = -1;
   d->mode = SM_DELIVER;
+  d->delay = 0;
   char *tab = strchr(buf, '\t');
   if (tab) {
     *tab = 0;
-    char *fields[4] = { NULL, NULL, NULL, NULL };
+    char *fields[5] = { NULL, NULL, NULL, NULL, NULL };
     char *p2 = tab + 1;
-    for (int i = 0; i < 4 && p2; i++) {
+    for (int i = 0; i < 5 && p2; i++) {
       fields[i] = p2;
       char *nx = strchr(p2, '\t');
       if (nx) { *nx = 0; p2 = nx + 1; } else p2 = NULL;
@@ -477,6 +529,10 @@ static int read_delivery(int fd, Delivery *d) {
     if (fields[1] && !strcmp(fields[1], "out")) d->mode = SM_DEPART;
     if (fields[2]) d->fx = atof(fields[2]);
     if (fields[3]) d->fy = atof(fields[3]);
+    if (fields[4]) {
+      d->delay = atof(fields[4]);
+      if (d->delay < 0 || d->delay > 120) d->delay = 0;
+    }
   }
 
   size_t fl = strlen(buf);
@@ -586,6 +642,7 @@ static int daemon_main(int pixel_size) {
 
   Delivery queue[QUEUE_MAX];
   int qn = 0;
+  int said_pill = 0;
 
   int xfd = ConnectionNumber(o.dpy);
 
@@ -597,8 +654,12 @@ static int daemon_main(int pixel_size) {
     int maxfd = xfd > lfd ? xfd : lfd;
 
     struct timeval tv, *ptv = NULL;
-    if (active) {
-      double wait = next_frame - now_sec();
+    double wake = -1;
+    if (active) wake = next_frame;
+    /* a letter still in the air is the other thing worth waking for */
+    if (!active && qn > 0 && (wake < 0 || queue[0].due < wake)) wake = queue[0].due;
+    if (wake >= 0) {
+      double wait = wake - now_sec();
       if (wait < 0) wait = 0;
       tv.tv_sec = (time_t)wait;
       tv.tv_usec = (suseconds_t)((wait - tv.tv_sec) * 1e6);
@@ -619,7 +680,13 @@ static int daemon_main(int pixel_size) {
       if (cfd >= 0) {
         Delivery d;
         memset(&d, 0, sizeof(d));
-        if (read_delivery(cfd, &d) && qn < QUEUE_MAX) queue[qn++] = d;
+        if (read_delivery(cfd, &d) && qn < QUEUE_MAX) {
+          d.due = now_sec() + (d.delay > 0 ? d.delay : 0);
+          if (d.delay > 0.05)
+            fprintf(stderr, "[aviary] a %s is %.1fs out\n",
+                    d.bird[0] ? d.bird : "bird", d.delay);
+          queue[qn++] = d;
+        }
         close(cfd);
       }
     }
@@ -629,14 +696,24 @@ static int daemon_main(int pixel_size) {
       XNextEvent(o.dpy, &ev);
       if (ev.type == ButtonPress && active) {
         /* clicks arrive in device pixels; the scene thinks in sprite pixels */
-        if (letter_hit(&scene.letter, ev.xbutton.x / o.px.size, ev.xbutton.y / o.px.size))
+        int hit = letter_hit(&scene.letter,
+                             ev.xbutton.x / o.px.size, ev.xbutton.y / o.px.size);
+        /* Where XShape is available the only clicks this window can receive at
+         * all are the ones the input region let through, and that region is
+         * the pill. A click that arrives and then matches nothing means the
+         * two disagree by a pixel; the shape is what the person aimed at. */
+        if (hit || (o.have_shape && o.in_w > 0)) {
           letter_dismiss(&scene.letter);
+          fprintf(stderr, "[aviary] let go\n");
+        } else
+          fprintf(stderr, "[aviary] a click at %d,%d landed on nothing\n",
+                  ev.xbutton.x, ev.xbutton.y);
       } else if (ev.type == Expose && active) {
         overlay_present(&o, 0, 0, o.px.bw, o.px.bh);
       }
     }
 
-    if (!active && qn > 0) {
+    if (!active && qn > 0 && now_sec() >= queue[0].due) {
       Delivery d = queue[0];
       memmove(&queue[0], &queue[1], sizeof(Delivery) * (size_t)(qn - 1));
       qn--;
@@ -646,6 +723,16 @@ static int daemon_main(int pixel_size) {
       int ax = -1, ay = -1;
       int have_spot = delivery_anchor(&o, d.fx, d.fy, &ax, &ay);
       overlay_place(&o, ax, ay);
+      fprintf(stderr, "[aviary] %s %s%s%s\n",
+              d.mode == SM_DEPART ? "a" : "flying in a",
+              d.bird[0] ? d.bird : "bird",
+              d.mode == SM_DEPART ? " is coming for it" : " from ",
+              d.mode == SM_DEPART ? "" : (d.from[0] ? d.from : "somewhere"));
+      if (d.mode == SM_DEPART && have_spot)
+        fprintf(stderr, "[aviary] collecting from the cursor, at %d,%d\n", ax, ay);
+      else if (d.mode == SM_DEPART)
+        fprintf(stderr, "[aviary] collecting from the middle — the terminal did "
+                        "not say where its cursor was\n");
 
       if (d.mode == SM_DEPART) {
         double lx = o.px.bw * 0.5, ly = o.px.bh * 0.75;
@@ -660,6 +747,7 @@ static int daemon_main(int pixel_size) {
                     scene_species_from_name(d.bird));
       }
       active = 1;
+      said_pill = 0;
       next_frame = now_sec();
       prev_w = prev_h = 0;
       overlay_clear(&o, 0, 0, o.px.bw, o.px.bh);
@@ -697,14 +785,21 @@ static int daemon_main(int pixel_size) {
       /* Only the "let it go" pill catches clicks; the rest of the letter is
        * as click-through as the rest of the overlay, so nothing is ever
        * trapped behind a piece of paper. */
-      if (scene.letter.open && scene.letter.open_t > 0.6 &&
-          !scene.letter.gone && !scene.letter.burning && scene.letter.btn_w > 0) {
-        int pad = 5;
-        overlay_input_region(&o,
-                             (int)(scene.letter.btn_x - pad) * o.px.size,
-                             (int)(scene.letter.btn_y - pad) * o.px.size,
-                             (int)(scene.letter.btn_w + pad * 2) * o.px.size,
-                             (int)(scene.letter.btn_h + pad * 2) * o.px.size);
+      double pill_x, pill_y, pill_w, pill_h;
+      if (letter_button(&scene.letter, &pill_x, &pill_y, &pill_w, &pill_h)) {
+        /* floor the corner and ceil the far edge, so the region is never a
+         * pixel smaller than the thing it is standing in for */
+        int rx = (int)floor(pill_x) * o.px.size;
+        int ry = (int)floor(pill_y) * o.px.size;
+        int rw = (int)ceil(pill_x + pill_w) * o.px.size - rx;
+        int rh = (int)ceil(pill_y + pill_h) * o.px.size - ry;
+        /* the rectangle is still settling while the panel opens; one line
+         * when it is finally the real one is worth having in the log */
+        if (!said_pill && scene.letter.open_t >= 1) {
+          fprintf(stderr, "[aviary] let it go: %dx%d at +%d+%d\n", rw, rh, rx, ry);
+          said_pill = 1;
+        }
+        overlay_input_region(&o, rx, ry, rw, rh);
       }
       else
         overlay_input_region(&o, 0, 0, 0, 0);
@@ -782,22 +877,23 @@ static int compose_main(int argc, char **argv) {
   while (l && (text[l - 1] == '\n' || text[l - 1] == '\r')) text[--l] = 0;
   if (!l) { fprintf(stderr, "nothing to send.\n"); return 1; }
 
-  /* the spot just past what was typed, one line down */
+  /* the spot just past what was typed, on the line it was typed on */
   double fx = -1, fy = -1;
-  if (have_cur && have_cells) {
-    double end_col = col + (double)l;
-    while (end_col > cols) end_col -= cols;          /* it wrapped */
-    fx = (end_col - 0.5) / cols;
-    fy = (row + 0.5) / rows;
-    if (fy > 0.995) fy = 0.995;
-  }
+  if (have_cur && have_cells)
+    spot_from_cell(row, col, rows, cols, (double)l, &fx, &fy);
 
   /* the bird lifts off your screen carrying it ... */
-  int flew = (client_send(text, from, bird, 1, fx, fy) == 0);
+  int flew = (client_send(text, from, bird, 1, fx, fy, 0) == 0);
 
-  /* ... and the same letter goes to the other laptop */
+  /* ... and the same letter goes to the other laptop, which is told to hold it
+   * until this bird has actually gone. Two birds moving at the same moment on
+   * two desks reads as a copy; one leaving and then the other arriving reads
+   * as the same bird. */
   int sent = 0;
-  if (!local_only && linked) sent = (net_publish(text, from, bird) == 0);
+  if (!local_only && linked) {
+    double flight = depart_seconds(scene_species_from_name(bird)) + cfg.travel;
+    sent = (net_publish(text, from, bird, flight) == 0);
+  }
 
   if (!linked) {
     printf("\033[2m  not paired yet, so this went nowhere.\033[0m\n");
@@ -931,7 +1027,8 @@ static void usage(void) {
     "now and then\n"
     "  aviary --bird owl         send with a different bird this once\n"
     "  aviary send \"text\"        send in one line, without the prompt\n"
-    "      --local               fly it on your own screen only\n"
+    "      --local               do not send it: fly the arriving bird here,\n"
+    "                            so you can see what she sees\n"
     "  aviary status             what is running, what is paired, what is wrong\n"
     "  aviary restart            bounce the overlay (it starts itself anyway)\n"
     "  aviary stop               stop the overlay\n"
@@ -968,14 +1065,26 @@ int main(int argc, char **argv) {
     }
     if (!tl) { fprintf(stderr, "aviary send: nothing to say\n"); return 1; }
 
-    if (!local_only && linked) av_ensure_daemon();
-    int flew = client_send(text, from, bird, 0, -1, -1) == 0;
-    if (local_only || !linked) {
-      if (!linked && !local_only)
-        printf("  not paired, so this stayed here. `aviary invite` sets that up.\n");
+    av_ensure_daemon();
+
+    /* --local is for looking at it: fly the bird that *arrives*, letter and
+     * all, which is the half you otherwise never see from this end. A real
+     * send is the other half — a bird coming to the cursor to collect it. */
+    if (local_only)
+      return client_send(text, from, bird, 0, -1, -1, 0);
+
+    /* the cursor is already on the line below the command, which is where the
+     * bird should come for it */
+    double fx = -1, fy = -1;
+    terminal_spot(0, &fx, &fy);
+
+    int flew = client_send(text, from, bird, 1, fx, fy, 0) == 0;
+    if (!linked) {
+      printf("  not paired, so this stayed here. `aviary invite` sets that up.\n");
       return flew ? 0 : 1;
     }
-    int sent = net_publish(text, from, bird) == 0;
+    double flight = depart_seconds(scene_species_from_name(bird)) + cfg.travel;
+    int sent = net_publish(text, from, bird, flight) == 0;
     if (sent && !flew) printf("  delivered, but no bird flew here.\n");
     return sent ? 0 : 1;
   }

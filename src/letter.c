@@ -196,12 +196,25 @@ void letter_scorch(Letter *l) {
   l->ember = 1;
 }
 
-int letter_hit(Letter *l, int x, int y) {
+/* The pill, plus the ring around it that also counts as hitting it. One
+ * definition, used both to shape the overlay's input region and to test the
+ * click that comes back through it — two of these drifting apart is a click
+ * that lands on the overlay and then matches nothing. */
+int letter_button(Letter *l, double *x, double *y, double *w, double *h) {
   if (!l->open || l->gone || l->burning || l->open_t < 0.6) return 0;
-  if (l->btn_w <= 0) return 0;
-  double pad = 4 * l->ui;
-  return x >= l->btn_x - pad && x <= l->btn_x + l->btn_w + pad &&
-         y >= l->btn_y - pad && y <= l->btn_y + l->btn_h + pad;
+  if (l->btn_w <= 0 || l->btn_h <= 0) return 0;
+  double pad = 7 * l->ui;
+  *x = l->btn_x - pad;
+  *y = l->btn_y - pad;
+  *w = l->btn_w + pad * 2;
+  *h = l->btn_h + pad * 2;
+  return 1;
+}
+
+int letter_hit(Letter *l, int x, int y) {
+  double bx, by, bw, bh;
+  if (!letter_button(l, &bx, &by, &bw, &bh)) return 0;
+  return x >= bx && x <= bx + bw && y >= by && y <= by + bh;
 }
 
 double letter_burn_y(Letter *l) {
@@ -569,11 +582,20 @@ void letter_draw(Letter *l, cairo_t *cr) {
     }
 
     double bw = 108 * l->ui, bh = 30 * l->ui;
-    l->btn_x = l->x + PAD_L;
-    l->btn_y = l->y + y + 12 * l->ui;
-    l->btn_w = bw;
-    l->btn_h = bh;
-    av_round_rect(cr, PAD_L, y + 12 * l->ui, bw, bh, bh / 2);
+    double bpx = PAD_L, bpy = y + 12 * l->ui;
+
+    /* The panel is drawn through a transform that is still running while it
+     * opens — it grows from a sliver into place. Recording the pill at its
+     * settled position meant that for the third of a second between the pill
+     * appearing and the panel finishing, the rectangle being clicked was not
+     * the rectangle on the screen, and the click did nothing. Put it through
+     * the same transform the drawing goes through. */
+    l->btn_x = l->x + l->w / 2 + sx * (bpx - l->w / 2);
+    l->btn_y = l->y + lift + sy * bpy;
+    l->btn_w = bw * sx;
+    l->btn_h = bh * sy;
+
+    av_round_rect(cr, bpx, bpy, bw, bh, bh / 2);
     cairo_set_source_rgba(cr, k.ink.r, k.ink.g, k.ink.b, 0.34 * tin);
     cairo_set_line_width(cr, 1);
     cairo_stroke(cr);

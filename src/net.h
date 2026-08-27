@@ -17,8 +17,14 @@ typedef struct {
   char          name[64];
   char          bird[24];
   char          self[20];     /* this machine, so it ignores its own letters */
+  double        travel;       /* seconds in the air between the two laptops */
   int           linked;
 } AvConfig;
+
+/* How long the bird is still on the sender's screen after the line is typed:
+ * it has to fly in, collect the letter and carry it off the edge. The other
+ * laptop is told this so it can wait, instead of both birds moving at once. */
+#define AV_TRAVEL_DEFAULT 2.5
 
 int  av_config_load(AvConfig *c);
 int  av_config_save(const AvConfig *c);
@@ -37,8 +43,11 @@ int  net_link(const char *topic, const char *pass, const char *name,
 int  net_invite(const char *name, const char *bird);        /* mints a code */
 int  net_join(const char *code, const char *name, const char *bird);
 
-/* hand a letter to the relay for the other machine to pick up */
-int  net_publish(const char *text, const char *from, const char *bird);
+/* Hand a letter to the relay for the other machine to pick up. `flight` is how
+ * long that machine should hold it before flying it in, so the bird looks like
+ * it crossed the gap rather than being in two places at once. */
+int  net_publish(const char *text, const char *from, const char *bird,
+                 double flight);
 
 /* block forever, waiting for letters, flying each one on the local screen */
 int  net_listen(void);
@@ -56,6 +65,6 @@ void av_daemon_release(void);
 int  av_ensure_daemon(void);
 int  av_daemon_bounce(void);         /* stop it if it is up, then start it */
 int  av_local_send(const char *text, const char *from, const char *bird,
-                   int depart, double fx, double fy);
+                   int depart, double fx, double fy, double delay);
 
 #endif

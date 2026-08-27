@@ -37,7 +37,7 @@ void av_socket_path(char *out, size_t n) {
 }
 
 int av_local_send(const char *text, const char *from, const char *bird,
-                  int depart, double fx, double fy) {
+                  int depart, double fx, double fy, double delay) {
   char path[256];
   av_socket_path(path, sizeof(path));
 
@@ -55,8 +55,9 @@ int av_local_send(const char *text, const char *from, const char *bird,
     close(fd);
     return 2;                       /* no daemon listening */
   }
-  dprintf(fd, "%s\t%s\t%s\t%.5f\t%.5f\n",
-          from ? from : "", bird ? bird : "", depart ? "out" : "in", fx, fy);
+  dprintf(fd, "%s\t%s\t%s\t%.5f\t%.5f\t%.3f\n",
+          from ? from : "", bird ? bird : "", depart ? "out" : "in", fx, fy,
+          delay > 0 ? delay : 0.0);
   size_t tl = strlen(text);
   if (write(fd, text, tl) < 0) { /* nothing useful to do */ }
   shutdown(fd, SHUT_WR);
@@ -128,6 +129,7 @@ static int hex_decode(const char *in, unsigned char *out, size_t n) {
 int av_config_load(AvConfig *c) {
   memset(c, 0, sizeof(*c));
   snprintf(c->bird, sizeof(c->bird), "pigeon");
+  c->travel = AV_TRAVEL_DEFAULT;
   char path[512];
   av_config_path(path, sizeof(path));
   FILE *f = fopen(path, "r");
@@ -147,6 +149,12 @@ int av_config_load(AvConfig *c) {
     else if (!strcmp(k, "name")) snprintf(c->name, sizeof(c->name), "%s", v);
     else if (!strcmp(k, "bird")) snprintf(c->bird, sizeof(c->bird), "%s", v);
     else if (!strcmp(k, "self")) snprintf(c->self, sizeof(c->self), "%s", v);
+    else if (!strcmp(k, "travel")) {
+      /* how long the gap between the two desks should feel; a matter of taste,
+       * so it is here rather than compiled in */
+      double t = atof(v);
+      if (t >= 0 && t < 120) c->travel = t;
+    }
   }
   fclose(f);
   c->linked = have_topic && have_key;
@@ -173,8 +181,8 @@ int av_config_save(const AvConfig *c) {
   if (!f) { perror("aviary: config"); return 1; }
   char hex[65];
   hex_encode(c->key, 32, hex);
-  fprintf(f, "topic=%s\nkey=%s\nname=%s\nbird=%s\nself=%s\n",
-          c->topic, hex, c->name, c->bird, c->self);
+  fprintf(f, "topic=%s\nkey=%s\nname=%s\nbird=%s\nself=%s\ntravel=%.2f\n",
+          c->topic, hex, c->name, c->bird, c->self, c->travel);
   fclose(f);
   chmod(path, 0600);                 /* the key lives here */
   return 0;
@@ -480,6 +488,7 @@ static int save_pairing(const unsigned char *sec, const char *name,
   snprintf(c.name, sizeof(c.name), "%s",
            name && *name ? name : (getenv("USER") ? getenv("USER") : ""));
   snprintf(c.bird, sizeof(c.bird), "%s", bird && *bird ? bird : "pigeon");
+  c.travel = AV_TRAVEL_DEFAULT;
   unsigned char r[8];
   if (RAND_bytes(r, sizeof(r)) == 1) hex_encode(r, sizeof(r), c.self);
   c.linked = 1;
@@ -550,6 +559,7 @@ int net_link(const char *topic, const char *pass, const char *name,
   snprintf(c.name, sizeof(c.name), "%s", name && *name ? name : (getenv("USER") ? getenv("USER") : ""));
   snprintf(c.bird, sizeof(c.bird), "%s", bird && *bird ? bird : "pigeon");
   derive_key(pass, c.key);
+  c.travel = AV_TRAVEL_DEFAULT;
   unsigned char r[8];
   if (RAND_bytes(r, sizeof(r)) == 1) hex_encode(r, sizeof(r), c.self);
   c.linked = 1;
@@ -576,18 +586,24 @@ static size_t sink(void *p, size_t sz, size_t n, void *u) {
   return sz * n;
 }
 
-int net_publish(const char *text, const char *from, const char *bird) {
+int net_publish(const char *text, const char *from, const char *bird,
+                double flight) {
   AvConfig c;
   if (!av_config_load(&c)) {
     fprintf(stderr, "aviary: not linked yet — run `aviary link <topic> <passphrase>`\n");
     return 1;
   }
 
+  /* The fourth line is newer than the first three. An older aviary at the far
+   * end will read it as the first line of the letter, which is untidy but not
+   * broken; a newer one at this end knows a three-line header when it sees
+   * one. Both are upgraded together in practice. */
   char plain[LETTER_PLAIN_MAX];
-  snprintf(plain, sizeof(plain), "%s\n%s\n%s\n%s",
+  snprintf(plain, sizeof(plain), "%s\n%s\n%s\nflight=%.2f\n%s",
            c.self,
            bird && *bird ? bird : c.bird,
            from && *from ? from : c.name,
+           flight > 0 ? flight : 0.0,
            text ? text : "");
 
   char *body = seal(c.key, plain);
@@ -672,6 +688,8 @@ void net_status_print(void) {
   stamp(since, when, sizeof(when));
   if (id[0]) printf("  resume      from message %s\n", id);
   else       printf("  resume      from the clock, %s\n", when);
+  printf("  travel      %.1fs in the air, on top of the sending bird's flight\n",
+         c.travel);
 
   /* Ask the relay what it is holding for this topic. A letter sent while the
    * laptop was off is still there until it expires, so "3 held" during a
@@ -832,6 +850,19 @@ static void handle_line(Listener *L, const char *line) {
   const char *from = nl2 + 1;
   const char *text = nl3 + 1;
 
+  /* optional fourth header line */
+  double flight = 0;
+  if (!strncmp(text, "flight=", 7)) {
+    const char *v = text + 7;
+    char *nl4 = strchr(v, '\n');
+    if (nl4) {
+      *nl4 = 0;
+      flight = atof(v);
+      text = nl4 + 1;
+      if (flight < 0 || flight > 120) flight = 0;
+    }
+  }
+
   if (L->cfg->self[0] && !strcmp(sender, L->cfg->self)) {
     /* our own letter, come back around the loop */
     snprintf(L->last_id, sizeof(L->last_id), "%s", id);
@@ -842,9 +873,23 @@ static void handle_line(Listener *L, const char *line) {
     return;
   }
 
-  int rc = av_local_send(text, from, bird, 0, -1, -1);
+  /* The other bird is still crossing its own screen. Take off what the relay
+   * already spent so the wait is the flight and not the flight plus the
+   * network — and if the two clocks disagree, fall back to the whole thing
+   * rather than trusting a number that could be days out. */
+  double hold = flight;
+  long t_sent = json_num(line, "time");
+  if (hold > 0 && t_sent > 0) {
+    double lag = (double)time(NULL) - (double)t_sent;
+    if (lag > 0 && lag < hold) hold -= lag;
+  }
+
+  int rc = av_local_send(text, from, bird, 0, -1, -1, hold);
   if (rc == 2)
     fprintf(stderr, "[aviary] letter arrived but no daemon is running to fly it\n");
+  else if (hold > 0.05)
+    fprintf(stderr, "[aviary] letter from %s — a %s is %.1fs out\n",
+            from[0] ? from : "somewhere", bird, hold);
   else
     fprintf(stderr, "[aviary] letter from %s — sending a %s\n",
             from[0] ? from : "somewhere", bird);

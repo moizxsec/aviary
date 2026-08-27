@@ -346,6 +346,9 @@ typedef struct {
   double btn_x, btn_y, btn_w, btn_h;   /* screen coords, valid while open */
 } Letter;
 
+/* the "let it go" pill in screen coords, padded to what counts as a click;
+ * 0 if there is nothing to click just now */
+int  letter_button(Letter *l, double *x, double *y, double *w, double *h);
 void letter_plan(Letter *l, int sw, int sh);
 void letter_show(Letter *l, const char *text, const char *from);
 void letter_update(Letter *l, double dt);

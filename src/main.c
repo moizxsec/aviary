@@ -176,6 +176,10 @@ static double depart_seconds(int species) {
     case BIRD_PIGEON:  return 10.0;
     case BIRD_OWL:     return 11.1;
     case BIRD_SWALLOW: return 10.5;
+    case BIRD_DOVE:    return 10.8;      /* the same walk, taken slower */
+    case BIRD_HUMMINGBIRD: return 6.6;   /* in and gone */
+    case BIRD_RAVEN:   return 11.4;      /* heavy, and slow to leave */
+    case BIRD_HAWK:    return  7.4;      /* a fast stoop, and gone */
     default:           return  8.8;      /* phoenix */
   }
 }
@@ -1022,7 +1026,7 @@ static void usage(void) {
     "  aviary join <code>        on hers: paste that code. that is all.\n"
     "      --name <you>          how you are signed on the letters\n"
     "      --bird <B>            your usual bird\n"
-    "      B = phoenix | pigeon | owl | swallow\n"
+    "      B = phoenix | pigeon | owl | swallow | dove | hummingbird | raven | hawk\n"
     "\n"
     "now and then\n"
     "  aviary --bird owl         send with a different bird this once\n"

@@ -55,6 +55,14 @@ int render_main(int argc, char **argv) {
                 ? "sorry about the wall.\nhe is very old."
               : species == BIRD_PIGEON
                 ? "you asked for the pigeon.\nso here he is, finally."
+              : species == BIRD_DOVE
+                ? "nothing loud.\njust came to say it's alright."
+              : species == BIRD_HUMMINGBIRD
+                ? "blink and he's gone.\nread it fast."
+              : species == BIRD_RAVEN
+                ? "he only comes for the things\nyou can't say plain."
+              : species == BIRD_HAWK
+                ? "this one does not circle.\nit strikes and leaves."
                 : "the pigeon never came.\nso I sent something that burns.",
               "me", species);
   if (depart) {
@@ -129,6 +137,70 @@ int render_main(int argc, char **argv) {
     { "13-crouch",   S_TAKEOFF, 0.14, 0 },
     { "14-away",     S_TAKEOFF, 0.80, 0 },
   };
+  Beat dove_beats[] = {
+    { "01-entry",    S_ENTER,   0.30, 0 },
+    { "02-cruise",   S_ENTER,   1.10, 0 },
+    { "03-approach", S_LAND,    0.30, 0 },
+    { "04-flare",    S_LAND,    0.90, 0 },
+    { "05-touchdown",S_WALK,    0.10, 0 },
+    { "06-walking",  S_WALK,    0.55, 0 },
+    { "07-arrived",  S_SETDOWN, 0.20, 0 },
+    { "08-bow",      S_SETDOWN, 0.80, 0 },
+    { "09-letter",   S_STAY,    0.60, 0 },
+    { "10-waiting",  S_STAY,    1.60, 0 },
+    { "11-idling",   S_STAY,    3.10, 0 },
+    { "12-crouch",   S_TAKEOFF, 0.20, 0 },
+    { "13-whistle",  S_TAKEOFF, 0.44, 0 },
+    { "14-away",     S_TAKEOFF, 1.00, 0 },
+  };
+  Beat hummingbird_beats[] = {
+    { "01-entry",    S_ENTER,   0.25, 0 },
+    { "02-incoming", S_ENTER,   0.70, 0 },
+    { "03-arrive",   S_ENTER,   1.05, 0 },
+    { "04-hover",    S_SETTLE,  0.20, 0 },
+    { "05-poised",   S_SETTLE,  0.55, 0 },
+    { "06-release",  S_DROP,    0.12, 0 },
+    { "07-falling",  S_DROP,    0.34, 0 },
+    { "08-letter",   S_WATCH,   0.15, 0 },
+    { "09-curious",  S_WATCH,   0.45, 0 },
+    { "10-flick",    S_WATCH,   0.80, 0 },
+    { "11-off",      S_TAKEOFF, 0.10, 0 },
+    { "12-away",     S_TAKEOFF, 0.35, 0 },
+    { "13-gone",     S_TAKEOFF, 0.62, 0 },
+    { "14-clear",    S_TAKEOFF, 0.90, 0 },
+  };
+  Beat raven_beats[] = {
+    { "01-entry",    S_ENTER,   0.30, 0 },
+    { "02-cruise",   S_ENTER,   1.20, 0 },
+    { "03-approach", S_LAND,    0.30, 0 },
+    { "04-flare",    S_LAND,    0.95, 0 },
+    { "05-touchdown",S_WALK,    0.10, 0 },
+    { "06-walking",  S_WALK,    0.60, 0 },
+    { "07-arrived",  S_SETDOWN, 0.20, 0 },
+    { "08-setdown",  S_SETDOWN, 0.90, 0 },
+    { "09-letter",   S_STAY,    0.60, 0 },
+    { "10-waiting",  S_STAY,    1.80, 0 },
+    { "11-staying",  S_STAY,    3.40, 0 },
+    { "12-crouch",   S_TAKEOFF, 0.24, 0 },
+    { "13-heave",    S_TAKEOFF, 0.52, 0 },
+    { "14-away",     S_TAKEOFF, 1.10, 0 },
+  };
+  Beat hawk_beats[] = {
+    { "01-stoop",    S_ENTER,   0.25, 0 },
+    { "02-diving",   S_ENTER,   0.65, 0 },
+    { "03-closing",  S_LAND,    0.20, 0 },
+    { "04-strike",   S_LAND,    0.55, 0 },
+    { "05-brake",    S_LAND,    0.85, 0 },
+    { "06-down",     S_SETDOWN, 0.15, 0 },
+    { "07-release",  S_SETDOWN, 0.60, 0 },
+    { "08-letter",   S_STAY,    0.30, 0 },
+    { "09-stare",    S_STAY,    0.90, 0 },
+    { "10-holds",    S_STAY,    1.70, 0 },
+    { "11-crouch",   S_TAKEOFF, 0.12, 0 },
+    { "12-power",    S_TAKEOFF, 0.32, 0 },
+    { "13-up",       S_TAKEOFF, 0.58, 0 },
+    { "14-gone",     S_TAKEOFF, 0.85, 0 },
+  };
   Beat depart_beats[] = {
     { "01-typed",    S_ENTER,   0.35, 0 },
     { "02-incoming", S_ENTER,   1.20, 0 },
@@ -142,10 +214,15 @@ int render_main(int argc, char **argv) {
   Beat *beats = depart ? depart_beats
               : species == BIRD_PIGEON  ? pigeon_beats
               : species == BIRD_OWL     ? owl_beats
-              : species == BIRD_SWALLOW ? swallow_beats : phoenix_beats;
+              : species == BIRD_SWALLOW ? swallow_beats
+              : species == BIRD_DOVE    ? dove_beats
+              : species == BIRD_HUMMINGBIRD ? hummingbird_beats
+              : species == BIRD_RAVEN   ? raven_beats
+              : species == BIRD_HAWK    ? hawk_beats : phoenix_beats;
   int nbeats = depart ? ndepart
              : (int)(sizeof(phoenix_beats) / sizeof(phoenix_beats[0]));
-  (void)owl_beats; (void)swallow_beats;
+  (void)owl_beats; (void)swallow_beats; (void)dove_beats; (void)hummingbird_beats;
+  (void)raven_beats; (void)hawk_beats;
 
   int    last_state = -1;
   double state_t = 0, t = 0;
@@ -183,10 +260,18 @@ int render_main(int argc, char **argv) {
               100.0 * scene_flyer(&s)->y / px.bh,
               species == BIRD_SWALLOW ? s.swallow.wet
                 : species == BIRD_OWL ? s.owl.f.roll
-                : species == BIRD_PIGEON ? s.pigeon.walk_speed : s.phoenix.heat,
+                : species == BIRD_PIGEON ? s.pigeon.walk_speed
+                : species == BIRD_DOVE ? s.dove.walk_speed
+                : species == BIRD_HUMMINGBIRD ? s.hummingbird.blur
+                : species == BIRD_RAVEN ? s.raven.walk_speed
+                : species == BIRD_HAWK ? s.hawk.mantle : s.phoenix.heat,
               species == BIRD_SWALLOW ? s.rain
                 : species == BIRD_OWL ? s.owl.shake
-                : species == BIRD_PIGEON ? s.pigeon.flare : s.phoenix.burn_t,
+                : species == BIRD_PIGEON ? s.pigeon.flare
+                : species == BIRD_DOVE ? s.dove.flare
+                : species == BIRD_HUMMINGBIRD ? s.hummingbird.gorget
+                : species == BIRD_RAVEN ? s.raven.flare
+                : species == BIRD_HAWK ? s.hawk.flare : s.phoenix.burn_t,
               s.letter.open);
     }
 

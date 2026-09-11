@@ -13,9 +13,13 @@ static const char *STATE_NAMES[] = {
 
 int scene_species_from_name(const char *name) {
   if (!name) return BIRD_PHOENIX;
-  if (!strcmp(name, "pigeon") || !strcmp(name, "dove")) return BIRD_PIGEON;
+  if (!strcmp(name, "pigeon")) return BIRD_PIGEON;
+  if (!strcmp(name, "dove")) return BIRD_DOVE;
   if (!strcmp(name, "owl") || !strcmp(name, "errol")) return BIRD_OWL;
   if (!strcmp(name, "swallow") || !strcmp(name, "rain")) return BIRD_SWALLOW;
+  if (!strcmp(name, "hummingbird") || !strcmp(name, "hummer")) return BIRD_HUMMINGBIRD;
+  if (!strcmp(name, "raven") || !strcmp(name, "crow")) return BIRD_RAVEN;
+  if (!strcmp(name, "hawk") || !strcmp(name, "falcon")) return BIRD_HAWK;
   return BIRD_PHOENIX;
 }
 
@@ -25,6 +29,10 @@ Flyer *scene_flyer(Scene *s) {
   if (s->species == BIRD_PIGEON)  return &s->pigeon.f;
   if (s->species == BIRD_OWL)     return &s->owl.f;
   if (s->species == BIRD_SWALLOW) return &s->swallow.f;
+  if (s->species == BIRD_DOVE)    return &s->dove.f;
+  if (s->species == BIRD_HUMMINGBIRD) return &s->hummingbird.f;
+  if (s->species == BIRD_RAVEN)   return &s->raven.f;
+  if (s->species == BIRD_HAWK)    return &s->hawk.f;
   return &s->phoenix.f;
 }
 
@@ -32,6 +40,10 @@ static void bird_update(Scene *s, double dt) {
   if (s->species == BIRD_PIGEON)       pigeon_update(&s->pigeon, dt, &s->p);
   else if (s->species == BIRD_OWL)     owl_update(&s->owl, dt, &s->p);
   else if (s->species == BIRD_SWALLOW) swallow_update(&s->swallow, dt, &s->p);
+  else if (s->species == BIRD_DOVE)    dove_update(&s->dove, dt, &s->p);
+  else if (s->species == BIRD_HUMMINGBIRD) hummingbird_update(&s->hummingbird, dt, &s->p);
+  else if (s->species == BIRD_RAVEN)   raven_update(&s->raven, dt, &s->p);
+  else if (s->species == BIRD_HAWK)    hawk_update(&s->hawk, dt, &s->p);
   else if (!s->phoenix.consumed)       phoenix_update(&s->phoenix, dt, &s->p);
 }
 
@@ -39,6 +51,10 @@ static void bird_draw(Scene *s, cairo_t *cr) {
   if (s->species == BIRD_PIGEON)       pigeon_draw(&s->pigeon, cr);
   else if (s->species == BIRD_OWL)     owl_draw(&s->owl, cr);
   else if (s->species == BIRD_SWALLOW) swallow_draw(&s->swallow, cr);
+  else if (s->species == BIRD_DOVE)    dove_draw(&s->dove, cr);
+  else if (s->species == BIRD_HUMMINGBIRD) hummingbird_draw(&s->hummingbird, cr);
+  else if (s->species == BIRD_RAVEN)   raven_draw(&s->raven, cr);
+  else if (s->species == BIRD_HAWK)    hawk_draw(&s->hawk, cr);
   else                                 phoenix_draw(&s->phoenix, cr);
 }
 
@@ -46,6 +62,10 @@ static void bird_bbox(Scene *s, double *x0, double *y0, double *x1, double *y1) 
   if (s->species == BIRD_PIGEON)       pigeon_bbox(&s->pigeon, x0, y0, x1, y1);
   else if (s->species == BIRD_OWL)     owl_bbox(&s->owl, x0, y0, x1, y1);
   else if (s->species == BIRD_SWALLOW) swallow_bbox(&s->swallow, x0, y0, x1, y1);
+  else if (s->species == BIRD_DOVE)    dove_bbox(&s->dove, x0, y0, x1, y1);
+  else if (s->species == BIRD_HUMMINGBIRD) hummingbird_bbox(&s->hummingbird, x0, y0, x1, y1);
+  else if (s->species == BIRD_RAVEN)   raven_bbox(&s->raven, x0, y0, x1, y1);
+  else if (s->species == BIRD_HAWK)    hawk_bbox(&s->hawk, x0, y0, x1, y1);
   else if (!s->phoenix.consumed)       phoenix_bbox(&s->phoenix, x0, y0, x1, y1);
 }
 
@@ -60,8 +80,11 @@ static void pick_entry(Scene *s, double *ox, double *oy, Vec *mid,
                        double *ovx, double *ovy) {
   double pad = 170 * av_world();
   double x = 0, y = 0;
-  /* sides and top are likelier: birds rarely arrive from underneath */
-  int edge = s->species == BIRD_OWL ? (av_rand() < 0.5 ? 0 : 1) : av_rand_int(7);
+  /* sides and top are likelier: birds rarely arrive from underneath. The owl
+   * only ever comes in off a side; the hawk stoops, so it comes in high. */
+  int edge = s->species == BIRD_OWL ? (av_rand() < 0.5 ? 0 : 1)
+           : s->species == BIRD_HAWK ? (av_rand() < 0.6 ? 2 : (av_rand() < 0.5 ? 0 : 1))
+           : av_rand_int(7);
   if (edge == 0 || edge == 4) { x = -pad;        y = av_rand_range(s->sh * 0.12, s->sh * 0.78); }
   else if (edge == 1 || edge == 5) { x = s->sw + pad; y = av_rand_range(s->sh * 0.12, s->sh * 0.78); }
   else if (edge == 2 || edge == 3) { x = av_rand_range(s->sw * 0.1, s->sw * 0.9); y = -pad; }
@@ -116,18 +139,27 @@ void scene_start_ex(Scene *s, int sw, int sh, const char *text, const char *from
     case BIRD_PIGEON:  s->letter.style = LS_BRIGHT; break;  /* clean and bright */
     case BIRD_SWALLOW: s->letter.style = LS_WET;    break;  /* the ink has run */
     case BIRD_OWL:     s->letter.style = LS_DIRTY;  break;  /* creased, smudged */
+    case BIRD_DOVE:    s->letter.style = LS_BRIGHT; break;  /* clean, unhurried */
+    case BIRD_HUMMINGBIRD: s->letter.style = LS_BRIGHT; break;  /* dropped in a blink */
+    case BIRD_RAVEN:   s->letter.style = LS_DIRTY;  break;  /* creased, carried far */
+    case BIRD_HAWK:    s->letter.style = LS_BRIGHT; break;  /* clean, cold, exact */
   }
   s->letter.auto_t = 0;
 
   s->landing.x = s->letter.x + s->letter.w / 2;
-  s->landing.y = s->letter.y + (species == BIRD_PIGEON ? 5 : 18);
+  s->landing.y = s->letter.y +
+                 (species == BIRD_PIGEON || species == BIRD_DOVE ||
+                  species == BIRD_RAVEN || species == BIRD_HAWK ? 5 : 18);
   s->ground    = s->letter.y;          /* the pigeon stands on the paper's edge */
 
   /* Sized against oneko's 32x32 cat. The pigeon is a heavier bird, so it gets
    * a little more of the screen than the phoenix does. */
   double scale = (sh / 800.0) * (av_pixel_mode()
                    ? (species == BIRD_PIGEON ? 0.62 : species == BIRD_OWL ? 0.60
-                      : species == BIRD_SWALLOW ? 0.58 : 0.55)
+                      : species == BIRD_SWALLOW ? 0.58 : species == BIRD_DOVE ? 0.60
+                      : species == BIRD_HUMMINGBIRD ? 0.52
+                      : species == BIRD_RAVEN ? 0.70
+                      : species == BIRD_HAWK ? 0.58 : 0.55)
                    : 1.35);
 
   if (species == BIRD_OWL) {
@@ -149,13 +181,20 @@ void scene_start_ex(Scene *s, int sw, int sh, const char *text, const char *from
     s->touch.y = s->ground;
     s->perch.x = s->touch.x + av_rand_sym(60) * W;
     s->perch.y = s->ground - 170 * W;
-  } else if (species == BIRD_PIGEON) {
+  } else if (species == BIRD_PIGEON || species == BIRD_DOVE || species == BIRD_RAVEN) {
     /* touch down off to one side, so there is a walk to watch */
     double side = av_rand() < 0.5 ? -1 : 1;
     s->touch.x = s->landing.x + side * av_rand_range(46, 78) * W;
     s->touch.y = s->ground;
     s->perch.x = s->touch.x - side * 34 * W;
     s->perch.y = s->ground - 150 * W;
+  } else if (species == BIRD_HAWK) {
+    /* it stoops straight down onto the letter and brakes on it — no walk, so it
+     * touches down where the letter is, not off to one side */
+    s->touch.x = s->landing.x;
+    s->touch.y = s->ground;
+    s->perch.x = s->landing.x + av_rand_sym(24) * W;
+    s->perch.y = s->ground - 230 * W;      /* comes in high, from the stoop */
   } else {
     s->perch.x = s->landing.x + av_rand_sym(26);
     s->perch.y = s->landing.y - 112 * av_clamp(W, 0.4, 1.6);
@@ -191,6 +230,18 @@ void scene_start_ex(Scene *s, int sw, int sh, const char *text, const char *from
   } else if (species == BIRD_PIGEON) {
     pigeon_init(&s->pigeon, x, y, scale);
     f = &s->pigeon.f;
+  } else if (species == BIRD_DOVE) {
+    dove_init(&s->dove, x, y, scale);
+    f = &s->dove.f;
+  } else if (species == BIRD_HUMMINGBIRD) {
+    hummingbird_init(&s->hummingbird, x, y, scale);
+    f = &s->hummingbird.f;
+  } else if (species == BIRD_RAVEN) {
+    raven_init(&s->raven, x, y, scale);
+    f = &s->raven.f;
+  } else if (species == BIRD_HAWK) {
+    hawk_init(&s->hawk, x, y, scale);
+    f = &s->hawk.f;
   } else {
     phoenix_init(&s->phoenix, x, y, scale);
     f = &s->phoenix.f;
@@ -221,6 +272,10 @@ void scene_start_ex(Scene *s, int sw, int sh, const char *text, const char *from
     s->pigeon.carrying = 0;
     s->owl.carrying = 0;
     s->swallow.carrying = 0;
+    s->dove.carrying = 0;
+    s->hummingbird.carrying = 0;
+    s->raven.carrying = 0;
+    s->hawk.carrying = 0;
     s->swallow.wet = 0;                 /* it did not come out of any weather */
     f->wp[1].p = s->origin;
     f->wp[1].slow = 190 * W;
@@ -239,6 +294,10 @@ static Vec bird_letter_point(Scene *s) {
     case BIRD_SWALLOW: return swallow_letter_point(&s->swallow);
     case BIRD_OWL:     return owl_letter_point(&s->owl);
     case BIRD_PIGEON:  return pigeon_capsule_point(&s->pigeon);
+    case BIRD_DOVE:    return dove_capsule_point(&s->dove);
+    case BIRD_HUMMINGBIRD: return hummingbird_letter_point(&s->hummingbird);
+    case BIRD_RAVEN:   return raven_capsule_point(&s->raven);
+    case BIRD_HAWK:    return hawk_capsule_point(&s->hawk);
     default:           return phoenix_release_point(&s->phoenix);
   }
 }
@@ -252,6 +311,10 @@ static void release_scroll(Scene *s) {
     case BIRD_SWALLOW: s->swallow.carrying = 0; break;
     case BIRD_OWL:     s->owl.carrying     = 0; break;
     case BIRD_PIGEON:  s->pigeon.carrying  = 0; break;
+    case BIRD_DOVE:    s->dove.carrying     = 0; break;
+    case BIRD_HUMMINGBIRD: s->hummingbird.carrying = 0; break;
+    case BIRD_RAVEN:   s->raven.carrying    = 0; break;
+    case BIRD_HAWK:    s->hawk.carrying     = 0; break;
     default:           s->phoenix.carrying = 0; break;
   }
 
@@ -748,6 +811,358 @@ static void update_swallow(Scene *s, double dt) {
   }
 }
 
+/* ---- the dove: the pigeon's walk, without the hurry ------------------- */
+
+static void update_dove(Scene *s, double dt) {
+  Dove *b = &s->dove;
+  Flyer *f = &b->f;
+  double W = av_world();
+
+  switch (s->state) {
+    case S_ENTER: {
+      double d = hypot(f->x - s->perch.x, f->y - s->perch.y);
+      if (d < 60 * W || s->clock > 6.0) {
+        s->state = S_LAND;
+        s->clock = 0;
+        f->nwp = 1;
+        f->wp[0].p.x = s->touch.x;
+        f->wp[0].p.y = s->ground - b->stand_h * f->scale;
+        f->wp[0].slow = 150 * W;      /* eases down over a longer run-in */
+        f->wp[0].radius = 4 * W;
+        f->wander_gain = 26 * W;
+      }
+      break;
+    }
+
+    case S_LAND: {
+      double ty = s->ground - b->stand_h * f->scale;
+      double d = hypot(f->x - s->touch.x, f->y - ty);
+      b->flare = av_clamp(1.0 - d / (120 * W), 0, 1);
+      f->max_speed = av_damp(f->max_speed, av_lerp(180, 42, b->flare) * W, 4, dt);
+
+      if ((d < 7 * W && flyer_speed(f) < 55 * W) || s->clock > 5.0) {
+        dove_touch_down(b, s->ground);
+        scuff(s, f->x, s->ground, 4);
+        s->state = S_WALK;
+        s->clock = 0;
+        dove_walk_to(b, s->landing.x);
+      }
+      break;
+    }
+
+    case S_WALK:
+      if (!dove_walking(b) || s->clock > 6.0) {
+        s->state = S_SETDOWN;
+        s->clock = 0;
+        b->capsule_drop = 0.001;      /* head bends down to the leg */
+        b->bow = 0;
+      }
+      break;
+
+    case S_SETDOWN:
+      b->capsule_drop = av_clamp(s->clock / 1.3, 0.001, 1.0);
+      /* a slow bow over the letter, in and back out — the dove's small grace */
+      b->bow = sin(av_clamp(s->clock / 1.5, 0, 1) * M_PI) * 0.5;
+      if (b->carrying && s->clock > 0.65) release_scroll(s);
+      update_scroll(s, dt);
+      if (s->clock > 1.5) {
+        b->capsule_drop = 0;
+        b->bow = 0;
+        s->state = S_STAY;
+        s->clock = 0;
+      }
+      break;
+
+    case S_STAY:
+      /* it waits to be noticed, longer than the pigeon does, then goes */
+      if (!s->letter.open || s->clock > 28.0) { s->state = S_TAKEOFF; s->clock = 0; }
+      break;
+
+    case S_TAKEOFF:
+      if (b->grounded) {
+        b->crouch = av_clamp(s->clock / 0.34, 0, 1);
+        if (s->clock > 0.34) {
+          dove_launch(b);
+          scuff(s, f->x, s->ground, 6);
+          f->nwp = 1;
+          f->wp[0].p.x = f->x + f->facing * s->sw * 0.9;
+          f->wp[0].p.y = -120 * W;
+          f->wp[0].radius = 30;
+          f->wp[0].slow = 0;
+          f->max_speed = 260 * W;
+          f->wander_gain = 80 * W;
+        }
+      } else if (f->y < -70 * W || f->x < -90 * W || f->x > s->sw + 90 * W) {
+        s->state = S_DONE;
+        s->clock = 0;
+      }
+      break;
+
+    case S_READING:
+      if (!s->letter.open) { s->state = S_DONE; s->clock = 0; }
+      break;
+
+    case S_DONE:
+      if (s->clock > 0.6 && s->p.n == 0) s->done = 1;
+      break;
+  }
+}
+
+/* ---- the hummingbird: in, drop, gone ---------------------------------- */
+
+static void update_hummingbird(Scene *s, double dt) {
+  Hummingbird *b = &s->hummingbird;
+  Flyer *f = &b->f;
+  double W = av_world();
+
+  switch (s->state) {
+    case S_ENTER: {
+      double d = hypot(f->x - s->perch.x, f->y - s->perch.y);
+      if ((d < 44 * W && flyer_speed(f) < 200 * W) || s->clock > 6.0) {
+        s->state = S_SETTLE;
+        s->clock = 0;
+        f->hover = 1;
+        f->wander_gain = 60 * W;
+      }
+      break;
+    }
+
+    case S_SETTLE:
+      /* park over the drop spot — the jitter in the bird keeps it alive */
+      f->hover = 1;
+      f->wander_gain = 55 * W;
+      flyer_force(f, (s->perch.x - f->x) * 1.9, (s->perch.y - (f->y + f->bob)) * 1.9);
+      b->dip = av_clamp(s->clock / 0.7, 0, 1);
+      if (s->clock > 0.7) { s->state = S_DROP; s->clock = 0; release_scroll(s); }
+      break;
+
+    case S_DROP:
+      f->hover = 1;
+      f->wander_gain = 50 * W;
+      flyer_force(f, (s->perch.x - f->x) * 1.8, (s->perch.y - (f->y + f->bob)) * 1.8);
+      b->dip = av_damp(b->dip, 0, 8, dt);
+      update_scroll(s, dt);
+      if (!s->scroll.alive && s->clock > 0.25) { s->state = S_WATCH; s->clock = 0; }
+      break;
+
+    case S_WATCH:
+      /* one quick, curious flick about the spot, and then it bolts */
+      f->hover = 1;
+      f->wander_gain = 140 * W;
+      if (s->clock > 1.0) {
+        s->state = S_TAKEOFF;
+        s->clock = 0;
+        f->hover = 0;
+        f->nwp = 1;
+        f->wp[0].p.x = f->x + f->facing * s->sw * 1.2;
+        f->wp[0].p.y = -160 * W;
+        f->wp[0].radius = 30;
+        f->wp[0].slow = 0;
+        f->max_speed = 460 * W;
+        f->wander_gain = 220 * W;
+      }
+      break;
+
+    case S_TAKEOFF:
+      /* Unlike the others, it does not wait to be read. It is gone at once —
+       * but the letter it dropped has to stay until you let it go, so the
+       * scene lingers with the bird off-frame rather than ending. */
+      if (f->y < -110 * W || f->x < -120 * W || f->x > s->sw + 120 * W) {
+        s->state = s->letter.open ? S_READING : S_DONE;
+        s->clock = 0;
+      }
+      break;
+
+    case S_READING:
+      if (!s->letter.open) { s->state = S_DONE; s->clock = 0; }
+      break;
+
+    case S_DONE:
+      if (s->clock > 0.5 && s->p.n == 0) s->done = 1;
+      break;
+  }
+}
+
+/* ---- the raven: heavy, deliberate, and in no hurry to leave ----------- */
+
+static void update_raven(Scene *s, double dt) {
+  Raven *b = &s->raven;
+  Flyer *f = &b->f;
+  double W = av_world();
+
+  switch (s->state) {
+    case S_ENTER: {
+      double d = hypot(f->x - s->perch.x, f->y - s->perch.y);
+      if (d < 64 * W || s->clock > 6.5) {
+        s->state = S_LAND;
+        s->clock = 0;
+        f->nwp = 1;
+        f->wp[0].p.x = s->touch.x;
+        f->wp[0].p.y = s->ground - b->stand_h * f->scale;
+        f->wp[0].slow = 160 * W;
+        f->wp[0].radius = 4 * W;
+        f->wander_gain = 24 * W;
+      }
+      break;
+    }
+
+    case S_LAND: {
+      double ty = s->ground - b->stand_h * f->scale;
+      double d = hypot(f->x - s->touch.x, f->y - ty);
+      b->flare = av_clamp(1.0 - d / (130 * W), 0, 1);
+      f->max_speed = av_damp(f->max_speed, av_lerp(170, 40, b->flare) * W, 4, dt);
+
+      if ((d < 8 * W && flyer_speed(f) < 52 * W) || s->clock > 5.5) {
+        raven_touch_down(b, s->ground);
+        scuff(s, f->x, s->ground, 8);
+        s->state = S_WALK;
+        s->clock = 0;
+        raven_walk_to(b, s->landing.x);
+      }
+      break;
+    }
+
+    case S_WALK:
+      if (!raven_walking(b) || s->clock > 6.5) {
+        s->state = S_SETDOWN;
+        s->clock = 0;
+        b->capsule_drop = 0.001;
+      }
+      break;
+
+    case S_SETDOWN:
+      /* it puts the thing down slowly, without ceremony */
+      b->capsule_drop = av_clamp(s->clock / 1.5, 0.001, 1.0);
+      if (b->carrying && s->clock > 0.75) release_scroll(s);
+      update_scroll(s, dt);
+      if (s->clock > 1.7) {
+        b->capsule_drop = 0;
+        s->state = S_STAY;
+        s->clock = 0;
+      }
+      break;
+
+    case S_STAY:
+      /* and then it stays. Longer than any of them. */
+      if (!s->letter.open || s->clock > 34.0) { s->state = S_TAKEOFF; s->clock = 0; }
+      break;
+
+    case S_TAKEOFF:
+      if (b->grounded) {
+        b->crouch = av_clamp(s->clock / 0.40, 0, 1);
+        if (s->clock > 0.40) {
+          raven_launch(b);
+          scuff(s, f->x, s->ground, 12);
+          f->nwp = 1;
+          f->wp[0].p.x = f->x + f->facing * s->sw * 0.9;
+          f->wp[0].p.y = -130 * W;
+          f->wp[0].radius = 30;
+          f->wp[0].slow = 0;
+          f->max_speed = 240 * W;
+          f->wander_gain = 90 * W;
+        }
+      } else if (f->y < -80 * W || f->x < -100 * W || f->x > s->sw + 100 * W) {
+        s->state = S_DONE;
+        s->clock = 0;
+      }
+      break;
+
+    case S_READING:
+      if (!s->letter.open) { s->state = S_DONE; s->clock = 0; }
+      break;
+
+    case S_DONE:
+      if (s->clock > 0.6 && s->p.n == 0) s->done = 1;
+      break;
+  }
+}
+
+/* ---- the hawk: stoop, strike, drop, gone ------------------------------ */
+
+static void update_hawk(Scene *s, double dt) {
+  Hawk *b = &s->hawk;
+  Flyer *f = &b->f;
+  double W = av_world();
+
+  switch (s->state) {
+    case S_ENTER: {
+      double d = hypot(f->x - s->perch.x, f->y - s->perch.y);
+      if (d < 70 * W || s->clock > 6.0) {
+        s->state = S_LAND;
+        s->clock = 0;
+        f->nwp = 1;
+        f->wp[0].p.x = s->touch.x;                 /* straight down onto the spot */
+        f->wp[0].p.y = s->ground - b->stand_h * f->scale;
+        f->wp[0].slow = 62 * W;                    /* it brakes late — the stoop */
+        f->wp[0].radius = 4 * W;
+        f->wander_gain = 8 * W;                    /* committed to the line */
+      }
+      break;
+    }
+
+    case S_LAND: {
+      double ty = s->ground - b->stand_h * f->scale;
+      double d = hypot(f->x - s->touch.x, f->y - ty);
+      b->flare = av_clamp(1.0 - d / (150 * W), 0, 1);       /* the brake / strike */
+      f->max_speed = av_damp(f->max_speed, av_lerp(310, 44, b->flare) * W, 6, dt);
+
+      if ((d < 7 * W && flyer_speed(f) < 60 * W) || s->clock > 5.0) {
+        hawk_touch_down(b, s->ground);
+        scuff(s, f->x, s->ground, 12);
+        s->state = S_SETDOWN;
+        s->clock = 0;
+        b->capsule_drop = 0.001;
+      }
+      break;
+    }
+
+    case S_SETDOWN:
+      b->capsule_drop = av_clamp(s->clock / 0.9, 0.001, 1.0);   /* quick, exact */
+      if (b->carrying && s->clock > 0.4) release_scroll(s);
+      update_scroll(s, dt);
+      if (s->clock > 1.0) {
+        b->capsule_drop = 0;
+        s->state = S_STAY;
+        s->clock = 0;
+      }
+      break;
+
+    case S_STAY:
+      /* one cold beat, and it goes. It does not wait to be read. */
+      if (!s->letter.open || s->clock > 2.2) { s->state = S_TAKEOFF; s->clock = 0; }
+      break;
+
+    case S_TAKEOFF:
+      if (b->grounded) {
+        b->crouch = av_clamp(s->clock / 0.20, 0, 1);
+        if (s->clock > 0.20) {
+          hawk_launch(b);
+          scuff(s, f->x, s->ground, 10);
+          f->nwp = 1;
+          f->wp[0].p.x = f->x + f->facing * s->sw * 1.1;
+          f->wp[0].p.y = -150 * W;
+          f->wp[0].radius = 30;
+          f->wp[0].slow = 0;
+          f->max_speed = 400 * W;
+          f->wander_gain = 60 * W;
+        }
+      } else if (f->y < -90 * W || f->x < -110 * W || f->x > s->sw + 110 * W) {
+        /* gone at once; the letter it dropped stays until you let it go */
+        s->state = s->letter.open ? S_READING : S_DONE;
+        s->clock = 0;
+      }
+      break;
+
+    case S_READING:
+      if (!s->letter.open) { s->state = S_DONE; s->clock = 0; }
+      break;
+
+    case S_DONE:
+      if (s->clock > 0.5 && s->p.n == 0) s->done = 1;
+      break;
+  }
+}
+
 /* The phoenix's letter goes the same way the phoenix did. */
 static void burn_letter(Scene *s, double dt) {
   Letter *l = &s->letter;
@@ -779,6 +1194,10 @@ static void bird_set_carrying(Scene *s, int on) {
     case BIRD_PIGEON:  s->pigeon.carrying  = on; break;
     case BIRD_OWL:     s->owl.carrying     = on; break;
     case BIRD_SWALLOW: s->swallow.carrying = on; break;
+    case BIRD_DOVE:    s->dove.carrying    = on; break;
+    case BIRD_HUMMINGBIRD: s->hummingbird.carrying = on; break;
+    case BIRD_RAVEN:   s->raven.carrying   = on; break;
+    case BIRD_HAWK:    s->hawk.carrying    = on; break;
     default:           s->phoenix.carrying = on; break;
   }
 }
@@ -788,6 +1207,10 @@ static void bird_set_dip(Scene *s, double v) {
     case BIRD_PIGEON:  s->pigeon.capsule_drop = v; break;
     case BIRD_OWL:     s->owl.head_dip        = v; break;
     case BIRD_SWALLOW: s->swallow.head_dip    = v; break;
+    case BIRD_DOVE:    s->dove.capsule_drop   = v; break;
+    case BIRD_HUMMINGBIRD: s->hummingbird.dip = v; break;
+    case BIRD_RAVEN:   s->raven.capsule_drop  = v; break;
+    case BIRD_HAWK:    s->hawk.capsule_drop   = v; break;
     default: break;
   }
 }
@@ -797,17 +1220,27 @@ static double bird_stand_h(Scene *s) {
     case BIRD_PIGEON:  return s->pigeon.stand_h;
     case BIRD_OWL:     return s->owl.stand_h;
     case BIRD_SWALLOW: return s->swallow.stand_h;
+    case BIRD_DOVE:    return s->dove.stand_h;
+    case BIRD_RAVEN:   return s->raven.stand_h;
+    case BIRD_HAWK:    return s->hawk.stand_h;
     default:           return 0;
   }
 }
 
-static int bird_can_land(Scene *s) { return s->species != BIRD_PHOENIX; }
+/* The hover birds — phoenix and hummingbird — never touch down; everything
+ * else lands. */
+static int bird_can_land(Scene *s) {
+  return s->species != BIRD_PHOENIX && s->species != BIRD_HUMMINGBIRD;
+}
 
 static int bird_grounded(Scene *s) {
   switch (s->species) {
     case BIRD_PIGEON:  return s->pigeon.grounded;
     case BIRD_OWL:     return s->owl.grounded;
     case BIRD_SWALLOW: return s->swallow.grounded;
+    case BIRD_DOVE:    return s->dove.grounded;
+    case BIRD_RAVEN:   return s->raven.grounded;
+    case BIRD_HAWK:    return s->hawk.grounded;
     default:           return 0;
   }
 }
@@ -818,6 +1251,12 @@ static void bird_land(Scene *s, double ground_y) {
                        pigeon_walk_to(&s->pigeon, s->pigeon.f.x); break;
     case BIRD_OWL:     owl_touch_down(&s->owl, ground_y); s->owl.sprawl = 0; break;
     case BIRD_SWALLOW: swallow_touch_down(&s->swallow, ground_y); break;
+    case BIRD_DOVE:    dove_touch_down(&s->dove, ground_y);
+                       dove_walk_to(&s->dove, s->dove.f.x); break;
+    case BIRD_RAVEN:   raven_touch_down(&s->raven, ground_y);
+                       raven_walk_to(&s->raven, s->raven.f.x); break;
+    case BIRD_HAWK:    hawk_touch_down(&s->hawk, ground_y);
+                       hawk_walk_to(&s->hawk, s->hawk.f.x); break;
     default: break;
   }
 }
@@ -827,6 +1266,9 @@ static void bird_launch(Scene *s) {
     case BIRD_PIGEON:  pigeon_launch(&s->pigeon); break;
     case BIRD_OWL:     owl_launch(&s->owl); break;
     case BIRD_SWALLOW: swallow_launch(&s->swallow); break;
+    case BIRD_DOVE:    dove_launch(&s->dove); break;
+    case BIRD_RAVEN:   raven_launch(&s->raven); break;
+    case BIRD_HAWK:    hawk_launch(&s->hawk); break;
     default: break;
   }
 }
@@ -933,6 +1375,10 @@ void scene_update(Scene *s, double dt) {
   else if (s->species == BIRD_PIGEON)  update_pigeon(s, dt);
   else if (s->species == BIRD_OWL)     update_owl(s, dt);
   else if (s->species == BIRD_SWALLOW) update_swallow(s, dt);
+  else if (s->species == BIRD_DOVE)    update_dove(s, dt);
+  else if (s->species == BIRD_HUMMINGBIRD) update_hummingbird(s, dt);
+  else if (s->species == BIRD_RAVEN)   update_raven(s, dt);
+  else if (s->species == BIRD_HAWK)    update_hawk(s, dt);
   else                                 update_phoenix(s, dt);
 
   /* Once the scene is over the bird is gone; keeping it ticking means it goes

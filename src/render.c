@@ -228,6 +228,10 @@ int render_main(int argc, char **argv) {
   double state_t = 0, t = 0;
   int    frames = 0;
 
+  /* AVIARY_FILM=1 dumps every frame as film-NNNN.png, for assembling a moving
+   * preview. Off by default, so the normal beat-sheet render is unchanged. */
+  int    film = getenv("AVIARY_FILM") != NULL;
+
   fprintf(stderr, "pixel size %d, scene %dx%d units\n", P, px.bw, px.bh);
   fprintf(stderr, "state timeline:\n");
 
@@ -235,6 +239,17 @@ int render_main(int argc, char **argv) {
     scene_update(&s, 1.0 / 60.0);
     t += 1.0 / 60.0;
     frames++;
+
+    if (film) {
+      pixel_clear(&px, 0, 0, px.bw, px.bh);
+      scene_draw(&s, px.cr);
+      pixel_quantize(&px, 0, 0, px.bw, px.bh);
+      fill_bg(cr, RW, RH);
+      pixel_blit_op(&px, cr, 0, 0, px.bw, px.bh, CAIRO_OPERATOR_OVER);
+      char fn[64];
+      snprintf(fn, sizeof fn, "film-%04d", frames);
+      write_frame(surf, dir, fn);
+    }
 
     if (s.state != last_state) {
       fprintf(stderr, "  %-8s @ %5.2fs\n", scene_state_name(s.state), t);

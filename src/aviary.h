@@ -315,6 +315,166 @@ Vec  swallow_letter_point(Swallow *b);
 void swallow_touch_down(Swallow *b, double ground_y);
 void swallow_launch(Swallow *b);
 
+/* ------------------------------------------------------------------ dove -- */
+
+/* The pigeon's gentler cousin, same body plan and the same bob-walk, but pale
+ * where the pigeon is slate, and calm where the pigeon is put-upon. It does not
+ * clatter off in a hurry: it lands soft, bows once over the letter, waits, and
+ * lifts away on a slow beat. Same Columbidae anatomy, retuned to say "it's
+ * alright" instead of "here he is, finally". */
+typedef struct {
+  Flyer  f;
+
+  int    carrying;          /* message capsule still strapped to the leg */
+  double capsule_drop;      /* 0 on the leg .. 1 handed over */
+
+  int    grounded;
+  double ground_y;
+  double stand_h;
+  double walk_phase;
+  double walk_speed;
+  double walk_target;
+
+  double tail_fan;
+  double tail_drop;
+  double legs_out;
+  double crouch;
+  double head_dip;          /* the bow, and the reach down to the leg */
+  double look;
+  double puff;              /* throat swelling on a coo */
+  double flare;
+  double bow;               /* a slow settling bow the pigeon never does */
+
+  int    clapped;
+  double clap;              /* wing-whistle on launch — softer than a clap */
+
+  double idle_t, next_idle, act_t;
+  int    act;               /* 0 none, 1 peck, 2 look, 3 coo, 4 shuffle */
+} Dove;
+
+void dove_init(Dove *b, double x, double y, double scale);
+void dove_update(Dove *b, double dt, Particles *p);
+void dove_draw(Dove *b, cairo_t *cr);
+void dove_bbox(Dove *b, double *x0, double *y0, double *x1, double *y1);
+Vec  dove_capsule_point(Dove *b);
+void dove_touch_down(Dove *b, double ground_y);
+void dove_walk_to(Dove *b, double world_x);
+int  dove_walking(const Dove *b);
+void dove_launch(Dove *b);
+
+/* ------------------------------------------------------------ hummingbird -- */
+
+/* The smallest bird, and the only one that never touches down. It hovers on a
+ * blur of wings, drops the letter, and is gone almost before it arrived. */
+typedef struct {
+  Flyer  f;
+
+  int    carrying;
+  double dip;              /* reach down to release the letter */
+  double gorget;           /* throat flash, 0 matte .. 1 lit */
+  double blur;             /* wing-smear intensity, pulses with the beat */
+  double tail_fan;
+  double legs_out;
+
+  double dart_t, next_dart;     /* the restless micro-jitter timer */
+  double aim_x, aim_y;          /* current jitter impulse */
+} Hummingbird;
+
+void hummingbird_init(Hummingbird *b, double x, double y, double scale);
+void hummingbird_update(Hummingbird *b, double dt, Particles *p);
+void hummingbird_draw(Hummingbird *b, cairo_t *cr);
+void hummingbird_bbox(Hummingbird *b, double *x0, double *y0, double *x1, double *y1);
+Vec  hummingbird_letter_point(Hummingbird *b);
+
+/* ----------------------------------------------------------------- raven -- */
+
+/* The heaviest of the letter-carriers, and the slowest. All black, big-billed,
+ * with a shaggy throat and a wedge of a tail. It lands, sets the thing down
+ * without ceremony, and then it stays — longer than any of the others — as if
+ * it is not sure it should have brought this at all. It comes for the letters
+ * that are hard to say plain. Same perching build as the pigeon, made big and
+ * grave. It never hurries and it never burns. */
+typedef struct {
+  Flyer  f;
+
+  int    carrying;
+  double capsule_drop;
+
+  int    grounded;
+  double ground_y;
+  double stand_h;
+  double walk_phase;
+  double walk_speed;
+  double walk_target;
+
+  double tail_fan;
+  double tail_drop;
+  double legs_out;
+  double crouch;
+  double head_dip;
+  double look;
+  double throat;            /* the shaggy hackles lift on a croak */
+  double flare;
+  double gloss;             /* where the light catches the black, 0..1 */
+
+  int    clapped;
+  double clap;
+
+  double idle_t, next_idle, act_t;
+  int    act;               /* 0 none, 1 peck, 2 look, 3 croak, 4 shuffle */
+} Raven;
+
+void raven_init(Raven *b, double x, double y, double scale);
+void raven_update(Raven *b, double dt, Particles *p);
+void raven_draw(Raven *b, cairo_t *cr);
+void raven_bbox(Raven *b, double *x0, double *y0, double *x1, double *y1);
+Vec  raven_capsule_point(Raven *b);
+void raven_touch_down(Raven *b, double ground_y);
+void raven_walk_to(Raven *b, double world_x);
+int  raven_walking(const Raven *b);
+void raven_launch(Raven *b);
+
+/* ------------------------------------------------------------------ hawk -- */
+
+/* A falcon. It does not circle and it does not linger: it comes in fast on a
+ * straight stoop, brakes hard on the spot with its wings thrown up and its
+ * talons swung forward — the strike — sets the letter down, holds one cold
+ * beat, and powers away. It lands, but it does not walk. It never burns. */
+typedef struct {
+  Flyer  f;
+
+  int    carrying;
+  double capsule_drop;
+
+  int    grounded;
+  double ground_y;
+  double stand_h;
+  double walk_target;       /* it does not walk; kept for the shared land path */
+
+  double tail_fan;
+  double tail_drop;
+  double legs_out;
+  double crouch;
+  double head_dip;
+  double look;
+  double flare;
+  double mantle;            /* wings thrown up in the braking strike, 0..1 */
+  double talons;            /* feet swung forward for the strike, 0..1 */
+
+  int    clapped;
+  double clap;
+} Hawk;
+
+void hawk_init(Hawk *b, double x, double y, double scale);
+void hawk_update(Hawk *b, double dt, Particles *p);
+void hawk_draw(Hawk *b, cairo_t *cr);
+void hawk_bbox(Hawk *b, double *x0, double *y0, double *x1, double *y1);
+Vec  hawk_capsule_point(Hawk *b);
+void hawk_touch_down(Hawk *b, double ground_y);
+void hawk_walk_to(Hawk *b, double world_x);
+int  hawk_walking(const Hawk *b);
+void hawk_launch(Hawk *b);
+
 /* ---------------------------------------------------------------- letter -- */
 
 /* Each bird's letter arrives in the state that bird left it in. */
@@ -378,7 +538,9 @@ void pixel_blit_op(Pixelizer *p, cairo_t *dst, int x, int y, int w, int h,
 
 /* ----------------------------------------------------------------- scene -- */
 
-enum { BIRD_PHOENIX, BIRD_PIGEON, BIRD_OWL, BIRD_SWALLOW };
+/* Appended, never reordered: the wire sends a bird by name, and only this
+ * process turns that name into one of these. New species go on the end. */
+enum { BIRD_PHOENIX, BIRD_PIGEON, BIRD_OWL, BIRD_SWALLOW, BIRD_DOVE, BIRD_HUMMINGBIRD, BIRD_RAVEN, BIRD_HAWK };
 
 /* A bird either brings a letter to you, or comes and takes one away. */
 enum { SM_DELIVER, SM_DEPART };
@@ -404,7 +566,11 @@ typedef struct {
   Phoenix   phoenix;
   Pigeon    pigeon;
   Owl       owl;
-  Swallow   swallow;        /* only one is live; they are a few hundred bytes */
+  Swallow   swallow;
+  Dove      dove;
+  Hummingbird hummingbird;
+  Raven     raven;
+  Hawk      hawk;           /* only one is live; they are a few hundred bytes */
   double    rain;           /* 0 dry .. 1 downpour */
   double    rain_debt;      /* fractional drops carried between frames */
   int       mode;           /* SM_DELIVER or SM_DEPART */

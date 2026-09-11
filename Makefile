@@ -27,11 +27,15 @@ $(OBJDIR):
 
 # renders the whole delivery to PNGs; fails if any beat never happened
 check: $(BIN) | shots
-	@mkdir -p shots/pigeon shots/owl shots/swallow
+	@mkdir -p shots/pigeon shots/owl shots/swallow shots/dove shots/hummingbird shots/raven shots/hawk
 	./$(BIN) render shots 2 phoenix
 	./$(BIN) render shots/pigeon 2 pigeon
 	./$(BIN) render shots/owl 2 owl
 	./$(BIN) render shots/swallow 2 swallow
+	./$(BIN) render shots/dove 2 dove
+	./$(BIN) render shots/hummingbird 2 hummingbird
+	./$(BIN) render shots/raven 2 raven
+	./$(BIN) render shots/hawk 2 hawk
 
 shots:
 	@mkdir -p shots

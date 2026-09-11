@@ -299,6 +299,72 @@ static void edge_path(Letter *l, cairo_t *cr) {
   cairo_close_path(cr);
 }
 
+/* A stable hash of the sender's name, so their mark is always the same one. */
+static unsigned name_hash(const char *s) {
+  unsigned h = 2166136261u;
+  for (; s && *s; s++) { h ^= (unsigned char)*s; h *= 16777619u; }
+  return h ? h : 1;
+}
+
+/* The sender's seal: a small sigil built deterministically from their name, so
+ * every letter from the same person carries the same mark and you learn it as
+ * theirs — no handle, no account, just a shape that means "from me". Drawn in
+ * the seal's own unit space (about ±10), stamped into the wax. */
+static void draw_sigil(cairo_t *cr, const char *from) {
+  unsigned h = name_hash(from);
+  int    n    = 3 + (int)(h % 3);                 /* 3..5 nodes on the ring */
+  double rot  = ((h >> 3) % 360) * D2R;
+  int    star = (n % 2) && ((h >> 11) & 1);       /* odd rings can be drawn as a star */
+  int    step = star ? 2 : 1;
+  double R    = 7.4;
+
+  double nx[6], ny[6];
+  for (int i = 0; i < n; i++) {
+    double a = rot + i * TAU / n;
+    nx[i] = cos(a) * R;
+    ny[i] = sin(a) * R;
+  }
+
+  cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+  cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+
+  /* engraved: a dark press-line, then the lit wax edge just above it */
+  for (int pass = 0; pass < 2; pass++) {
+    double off = pass ? 0.0 : 0.7;
+    if (pass) cairo_set_source_rgba(cr, 1.0, 0.878, 0.741, 0.62);
+    else      cairo_set_source_rgba(cr, 0.15, 0.02, 0.03, 0.45);
+    cairo_set_line_width(cr, 1.35);
+    cairo_new_path(cr);
+    int idx = 0;
+    for (int i = 0; i <= n; i++) {
+      double x = nx[idx], y = ny[idx] + off;
+      if (i == 0) cairo_move_to(cr, x, y); else cairo_line_to(cr, x, y);
+      idx = (idx + step) % n;
+    }
+    cairo_stroke(cr);
+    for (int i = 0; i < n; i++) {
+      cairo_arc(cr, nx[i], ny[i] + off, 1.05, 0, TAU);
+      cairo_fill(cr);
+    }
+    if (h & 1) { cairo_arc(cr, 0, off, 1.5, 0, TAU); cairo_fill(cr); }
+  }
+}
+
+/* the phoenix's own mark, kept for letters that arrive without a name */
+static void draw_flame_stamp(cairo_t *cr) {
+  cairo_set_source_rgba(cr, 1.0, 0.839, 0.698, 0.62);
+  cairo_new_path(cr);
+  cairo_move_to(cr, 0, -10.5);
+  cairo_curve_to(cr,  4.2, -4.6,  -2.0, -2.4,  -1.0,  2.0);
+  cairo_curve_to(cr, -0.4,  4.6,   1.6,  5.4,   1.6,  5.4);
+  cairo_curve_to(cr, -3.4,  4.6,  -5.6,  1.4,  -5.6, -1.2);
+  cairo_curve_to(cr, -5.6,  5.6,  -2.2,  9.8,   1.2,  9.8);
+  cairo_curve_to(cr,  5.0,  9.8,   8.0,  6.4,   8.0,  2.2);
+  cairo_curve_to(cr,  8.0, -3.4,   1.8, -5.2,   0.0, -10.5);
+  cairo_close_path(cr);
+  cairo_fill(cr);
+}
+
 static void draw_seal(Letter *l, cairo_t *cr, Rgb hi, Rgb lo) {
   double cx = l->w - 51 * l->ui, cy = 43 * l->ui, r = 21 * l->ui;
   cairo_save(cr);
@@ -327,19 +393,10 @@ static void draw_seal(Letter *l, cairo_t *cr, Rgb hi, Rgb lo) {
   cairo_set_line_width(cr, 1.1);
   cairo_stroke(cr);
 
-  /* stamped flame */
-  cairo_set_source_rgba(cr, 1.0, 0.839, 0.698, 0.62);
+  /* the stamp: the sender's own sigil, or the flame when it came unsigned */
   cairo_scale(cr, l->ui, l->ui);
-  cairo_new_path(cr);
-  cairo_move_to(cr, 0, -10.5);
-  cairo_curve_to(cr,  4.2, -4.6,  -2.0, -2.4,  -1.0,  2.0);
-  cairo_curve_to(cr, -0.4,  4.6,   1.6,  5.4,   1.6,  5.4);
-  cairo_curve_to(cr, -3.4,  4.6,  -5.6,  1.4,  -5.6, -1.2);
-  cairo_curve_to(cr, -5.6,  5.6,  -2.2,  9.8,   1.2,  9.8);
-  cairo_curve_to(cr,  5.0,  9.8,   8.0,  6.4,   8.0,  2.2);
-  cairo_curve_to(cr,  8.0, -3.4,   1.8, -5.2,   0.0, -10.5);
-  cairo_close_path(cr);
-  cairo_fill(cr);
+  if (l->from[0]) draw_sigil(cr, l->from);
+  else            draw_flame_stamp(cr);
   cairo_restore(cr);
 }
 
@@ -460,6 +517,36 @@ static void burn_edge_path(Letter *l, cairo_t *cr, double front) {
   cairo_close_path(cr);
 }
 
+/* Draw a line one glyph at a time, each nudged a little off the baseline, so
+ * the writing has a hand in it rather than sitting on a ruler. The jitter is
+ * seeded per line so it holds still frame to frame, and the amplitude comes off
+ * the font size so it stays a suggestion, never a stagger. */
+static void show_hand(cairo_t *cr, const char *s, double x, double y, int seed) {
+  cairo_font_extents_t fe;
+  cairo_font_extents(cr, &fe);
+  double amp = fe.ascent * 0.075;
+  int gi = 0;
+  for (const char *p = s; *p; ) {
+    unsigned char c = (unsigned char)*p;
+    int len = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+    char g[5];
+    int gl = 0;
+    for (int i = 0; i < len && p[i]; i++) g[gl++] = p[i];
+    g[gl] = 0;
+
+    double jy = (blot(seed * 101 + gi, 3) - 0.5) * 2.0 * amp;
+    double jx = (blot(seed * 89 + gi, 7) - 0.5) * amp * 0.6;
+    cairo_move_to(cr, x + jx, y + jy);
+    cairo_show_text(cr, g);
+
+    cairo_text_extents_t e;
+    cairo_text_extents(cr, g, &e);
+    x += e.x_advance;
+    p += len;
+    gi++;
+  }
+}
+
 void letter_draw(Letter *l, cairo_t *cr) {
   if (!l->open) return;
 
@@ -550,13 +637,13 @@ void letter_draw(Letter *l, cairo_t *cr) {
     char lines[MAX_LINES][512];
     int nl = wrap_text(cr, l->text, l->w - PAD_L - PAD_R, lines, MAX_LINES);
 
-    /* rain gets into the ink and it runs downward */
+    /* rain gets into the ink and it runs downward — same jitter seed as the
+     * ink above it, so the run sits under each letter rather than beside it */
     if (l->style == LS_WET) {
       double y = PAD_T + FONT_TEXT;
       av_set_rgba(cr, k.ink, 0.30 * tin);
       for (int i = 0; i < nl; i++) {
-        cairo_move_to(cr, PAD_L + 0.9 * l->ui, y + 1.6 * l->ui);
-        cairo_show_text(cr, lines[i]);
+        show_hand(cr, lines[i], PAD_L + 0.9 * l->ui, y + 1.6 * l->ui, i);
         y += LINE_H;
       }
     }
@@ -564,8 +651,7 @@ void letter_draw(Letter *l, cairo_t *cr) {
     av_set_rgba(cr, k.ink, tin);
     double y = PAD_T + FONT_TEXT;
     for (int i = 0; i < nl; i++) {
-      cairo_move_to(cr, PAD_L, y);
-      cairo_show_text(cr, lines[i]);
+      show_hand(cr, lines[i], PAD_L, y, i);
       y += LINE_H;
     }
 
